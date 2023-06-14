@@ -1,12 +1,12 @@
 cmake_minimum_required(VERSION 3.13)
 include(pico_sdk_import.cmake)
-project(nokia_5110 C CXX ASM)
+project(project_name C CXX ASM)
 set(CMAKE_C STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 set(PICO_EXAMPLES_PATH )
 pico_sdk_init()
-add_executable(nokia_5110 main.cpp)
-target_link_libraries(nokia_5110
+add_executable(project_name main.cpp)
+target_link_libraries(project_name
     pico_stdlib hardware_uart hardware_dma hardware_i2c hardware_spi)
-pico_add_extra_outputs(nokia_5110)
-pico_enable_stdio_usb(nokia_5110 1)
+pico_add_extra_outputs(project_name)
+pico_enable_stdio_usb(project_name 1)
