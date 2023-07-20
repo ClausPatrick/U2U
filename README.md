@@ -9,7 +9,70 @@ Hardware wise I decided to use straight through cabling and crossover the connec
 The main.cxx file should contain the initalisation of the messaging protocol and for now at least the forever while loop should check the message counter and invoke the message_handler() in case the count went up.
 Pin definitions pertaining to the UARTs as well as supported functions and their response strings are defined in u2uclientdef.c and obviously vary across the different boards.
 
-Message fields are seperated by a ':' and consists of the following:
+Running topic oriented messaging service is not trivial and the purpose is to implement this without too much overhead in the users main program. Certain hardware implementations allow for data transfers (reading out sensor
+information, reading in display information) but in a way that doesn't require the main program to handle the transmission services.
+Each unit can have 1 or 2 UART interfaces so boards are interconnected either via their single interface or daisy chained through via both interfaces. In the case of two interfaces, one will be designated IN and the other OUT. This allow for a network topology that resembles a linked list data structure
+(graph topology with one vertrex per node) whereas the single interface boards terminate the network.
+
+Each message contains several segments, bound by the desginator ':'. As the payload-length is variable one segment is dedicated to indicate the length of the payload and has a maximum length enforced by const int MAX_PAYLOAD_LENGTH.
+Here is a message outlined:
+::SENDER:RECEIVER:RQFLAG:TOPIC:CHAPTER:LENGTH:PAYLOAD:HOPCOUNT:CRC:
+A message start is indicated by a double colon '::'. This has two functions: it allows syncing of start messages and recognise if a faulty message is received. In many cases if the sender messed up several segments are rendered empty
+and the receiver will wait for a correct start.
+Values for SENDER and RECEIVER are designated strings the user sets for each board. In order to send messages to all units receiver name GEN (for general) can be used.
+RQ flags determine response behaviour:
+RQ: request - sender requests response.
+RS: response - sender is responding to a request.
+RI: ignore - no response is required but message will be forwarded if the receiver is not named in RECEIVER.
+NA: not acknowledged - receiver calculated a different CRC value than was indicated in CRC segment but receiver will respond to message even if it is not addressed in RECEIVER. This ensures the sender is made aware of the error
+without network overhead.
+TOPIC fields are preset and the specific board can implement its custom response.
+CHAPTER is analogue to sequences in TCP and indicates order. This will be ascii values {0-9}.
+LENGTH is indicating the character count of the PAYLOAD. This will be ascii values {0-9}.
+PAYLOAD is the data to be sent. Beside the MAX_PAYLOAD_LENGTH there is no limitation on the length or the character it contains, even (double)colons.
+HOPCOUNT keeps track of how many units have forwarded the message. Each forwarding will increment this value. This will be ascii values {0-9}.
+CRC for crc value. This will be ascii values {0-9}.
+
+u2u.h / u2u.c
+There are two main tasks that are executed to handle inbound and outbound messages.
+Inbound: Messages are being parsed on character basis and written into the correct field. Once completed and verified it will then be routed. Depending on the message contant it can be forwarded or responded to.
+Outbound: struct Message can be filled in with values in order to send this message over the lines.
+
+u2uclientdef.h
+User specific profile such as SENDER name and strings for responses as well as pin settings for UART.
+
+u2u_HAL**.c u2u_HAL**.h
+Hardware implementation. If interrupt routines are used, they are defined and implemented here.
+
+
+
+File structure
+
+-main.c/pp
+    Includes:   u2u.h
+    Declares:   struct Message
+    Invokes:    message_setup()
+                send_message(&Message)
+                get_message()
+
+-u2u.h
+    Includes:   u2u_HAL_~.h
+                u2uclientdef.h
+
+    Exposes:    uartN_character_processor()
+                send_message(struct message)
+
+    Invokes:    write_from_uartN(str)
+                u2u_uart_setup()
+-u2u.c
+    Defines:    struct Message
+
+-u2u_HAL_~.h
+
+
+
+
+As mentioned before, message fields are seperated by a ':' and consists of the following:
 :sender:        - Denoting senders unique name as 16 or less ASCII characters.
 :receiver:      - Containing up to 16 ASCII characters denoting a specific device name OR 'GEN' for general call which requests a response from all connected devices.
 :RQS:       - Flags {RQ, RS, RI, NA}, denoting the nature of response, where
