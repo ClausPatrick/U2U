@@ -2,18 +2,25 @@
 #ifndef U2U_H
 #define U2U_H
 
+//#include "u2u_HAL_pico.h"
+#include "u2uclientdef.h"
+
+#if U2U_PLATFORM_CHANNELS == 1
+#include "u2u_HAL_lx.h"
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include "c_logger.h"
+#endif
+
+#if U2U_PLATFORM_CHANNELS == 2
+#include "pico/stdlib.h"
 #include "u2u_HAL_pico.h"
-#include "u2uclientdef.h"
-//#include "c_logger.h"
+#endif
+
+
 
 #define general_name "GEN"
-#define uart0 0
-#define uart1 1
-#define UART0_IRQ 0
-#define UART1_IRQ 1
 
 #define MAX_MESSAGE_KEEP 8
 #define MAX_MESSAGE_PAYLOAD_SIZE 255
@@ -28,25 +35,20 @@
 
 //const char* topic_list[] = { "HAIL", "HELP", "SET LCD", "SET OLED", "GET SENSOR", "SET ENCODER", "GET ENCODER", "SET LED", "SET TIME", "GET TIME", "SET DATE", "GET DATE", "RESERVED 0", "RESERVED 1", "RESERVED 2", "RESERVED 3"};
 
-const uint8_t sg_WAIT_INDEX         = 0;
-const uint8_t sg_PREMESSAGE_INDEX   = 0;
-const uint8_t sg_SENDER_INDEX       = 1;
-const uint8_t sg_RECEIVER_INDEX     = 2;
-const uint8_t sg_RQS_INDEX          = 3;
-const uint8_t sg_TOPIC_INDEX        = 4;
-const uint8_t sg_CHAPTER_INDEX      = 5;
-const uint8_t sg_LENGTH_INDEX       = 6;
-const uint8_t sg_PAYLOAD_INDEX      = 7;
-const uint8_t sg_HOPCOUNT_INDEX     = 8;
-const uint8_t sg_CRC_INDEX          = 9;
+//extern const uint8_t sg_WAIT_INDEX         ;
+//extern const uint8_t sg_PREMESSAGE_INDEX   ;
+//extern const uint8_t sg_SENDER_INDEX       ;
+//extern const uint8_t sg_RECEIVER_INDEX     ;
+//extern const uint8_t sg_RQS_INDEX          ;
+//extern const uint8_t sg_TOPIC_INDEX        ;
+//extern const uint8_t sg_CHAPTER_INDEX      ;
+//extern const uint8_t sg_LENGTH_INDEX       ;
+//extern const uint8_t sg_PAYLOAD_INDEX      ;
+//extern const uint8_t sg_HOPCOUNT_INDEX     ;
+//extern const uint8_t sg_CRC_INDEX          ;
 
 
 struct    Message{
-//    char  Sender[32];
-//    char  Receiver[32];
-//    char  RQ[4];
-//    char  Topic[32];
-//    char  Chapter[4];
     int  ID;
     int   intChapter;
     const char*  Sender;
@@ -54,29 +56,44 @@ struct    Message{
     const char*  RQ;
     const char*  Topic;
     const char*  Chapter;
+    const char*  CRC;
+    const char*  Hops;
     int   intLength;
+    int   intCh_rx;
 
     int   Index;
     int   intRQ;
     char  Segments[12][32];
     char* Payload;
     int   Port;
-    int   intCRC;
+    int   intCRC_rx;
+    int   intCRC_cal;
+    int   intHops;
     char  CRC_buffer[255];
     int   CRC_index;
     bool  CRC_check;
     int   Topic_number;
+    int   Router_val;
     bool  For_self;
     bool  For_gen;
     bool  Cleared;
+
     //bool  RQ_flags[4]; //[0]: R, [1]: Q, [2]: I, [3]: N.
 };
 
 
-const char RQS_r[] = "RS";
-const char RQS_q[] = "RQ";
-const char RQS_i[] = "RI";
-const char RQS_n[] = "NA";
+struct Message_Queue {
+    int buffer[MAX_MESSAGE_KEEP];
+    int front;
+    int rear;
+    int count;
+} ;
+
+
+//extern const char RQS_r[];
+//extern const char RQS_q[];
+//extern const char RQS_i[];
+//extern const char RQS_n[];
 
 /*Inbound messages are stored in 'messages'*/
 struct Message* messages[MAX_MESSAGE_KEEP];
@@ -86,10 +103,14 @@ struct Message* messages[MAX_MESSAGE_KEEP];
 /*General purpose functions*/
 int ascii_to_int(char* str);
 void int_to_ascii(char* buf, int i, int p) ;
+int float_to_ascii(char* buf, float f, int p);
 int len(const char* s);
 int cmp(char* s1, const char* s2);
 int copy_str(char* buffer, const char* s, int index);
 char get_crc(char* buffer, char length);
+
+int in_queue(struct Message_Queue *queue, int data);
+int out_queue(struct Message_Queue *queue, int *data);
 
 /*Function to sequence the segments indicated by a ':'.*/
 uint8_t message_clear(uint8_t message_index, int port);
@@ -106,12 +127,12 @@ uint8_t determine_addressee(uint8_t message_index, int port); //0: Other, 1: Sel
 int message_topic_checker(uint8_t message_index, int port, char* buffer);
 uint8_t append_segment(char* buffer, const char* str, int index);
 uint8_t add_crc(char* buffer, int index);
-uint8_t compose_transmit_message(struct Message* message_tx, char* buffer);
+uint8_t compose_transmit_message(struct Message* message_tx, char* buffer, int* message_length);
 uint8_t u2u_send_message_uart0(struct Message* message_tx);
 uint8_t u2u_send_message_uart1(struct Message* message_tx);
 uint8_t u2u_send_message(struct Message* message_tx);
-uint8_t compose_response_message(uint8_t message_index, int port, char* buffer);
-uint8_t compose_forward_message(uint8_t message_index, int port, char* buffer);
+uint8_t compose_response_message(uint8_t message_index, int port, char* buffer, int* message_length);
+uint8_t compose_forward_message(uint8_t message_index, int port, char* buffer, int* message_length);
 //uint8_t write_from_uart0(char* buffer);
 //uint8_t write_from_uart1(char* buffer);
 uint8_t self_call(uint8_t message_index, int port);
@@ -133,7 +154,8 @@ uint8_t uart0_character_processor(char ch);
 uint8_t uart1_character_processor(char ch);
 //void uart0_irq_routine(void);
 //void uart1_irq_routine(void);
-void u2u_message_setup();
+int u2u_message_setup();
+int u2u_close(void);
 //void testfunc(char* s, int port);
 
 
