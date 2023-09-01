@@ -2,70 +2,73 @@
 #include "u2u.h"
 //#include "u2uclientdef.h"
 
-
 #define COLONS_TOTAL        0
 #define COLONS_SUCCESSIVE   1
 #define RESPOND_ON_BAD_CRC  1
 
 
-struct Message_Queue {
-    int buffer[MAX_MESSAGE_KEEP];
-    int front;
-    int rear;
-    int count;
-} ;
-
 struct Message_Queue Queue;
+struct Message* messages[MAX_MESSAGE_KEEP];
 
-
-
-static char log_buffer[1024];
 
 /* String constants against which topics are compared */
 const char* topic_list[]    = { "HAIL", "HELP", "SET LCD", "SET OLED", "GET SENSOR", "SET ENCODER", "GET ENCODER", "SET LED", "SET TIME", "GET TIME", "SET DATE", "GET DATE", "RESERVED 0", "RESERVED 1", "RESERVED 2", "RESERVED 3", "RESERVED 4"};
 /* Topic number corresponds to indices of char pointers. These can be overwritten in u2u_topic_exchange().*/
 const char* msg_responses[] = {msg_hail_response, msg_help_response, msg_set_lcd_response, msg_set_oled_response, msg_get_sensor_response, msg_set_encoder_response, msg_get_encoder_response, msg_set_led_response, msg_set_time_response, msg_get_time_response, msg_set_date_response, msg_get_date_response, msg_RESERVED_0, msg_RESERVED_1, msg_RESERVED_2, msg_RESERVED_3, msg_RESERVED_4} ;
+const char message_segment_labels[12][32] = {"#Premessage#", "#Sender#", "#Receiver#",  "#RQS#",  "#Topic#",  "#Chapter#",  "#Payload_Length#",  "#Payload_Data#",  "#Hopcount#",  "#CRC#", "#ENDOFMESSAGE#"};
+//const char* routing_labels = {"other_call", "self_call", "general_call", "general_call", "other_call", "no_response_call", "other_call", "other_call", "other_call"};
 
 struct Message mi0, mi1, mi2, mi3, mi4, mi5, mi6, mi7;
+struct Message mo;
+char mo_sender[16];
+char mo_receiver[16];
+char mo_topic[16];
+char mo_rqs[4];
+char mo_payload[255];
+char mo_chapter[4];
 
-const unsigned char CRC7_POLY = 0x91;
-//
-//const uint8_t sg_WAIT_INDEX         = 0;
-//const uint8_t sg_PREMESSAGE_INDEX   = 0;
-//const uint8_t sg_SENDER_INDEX       = 1;
-//const uint8_t sg_RECEIVER_INDEX     = 2;
-//const uint8_t sg_RQS_INDEX          = 3;
-//const uint8_t sg_TOPIC_INDEX        = 4;
-//const uint8_t sg_CHAPTER_INDEX      = 5;
-//const uint8_t sg_LENGTH_INDEX       = 6;
-//const uint8_t sg_PAYLOAD_INDEX      = 7;
-//const uint8_t sg_HOPCOUNT_INDEX     = 8;
-//const uint8_t sg_CRC_INDEX          = 9;
-//
-const char message_segment_labels[12][32] = {"#Premessage#", "#Sender#", "#Receiver#",  "#RQS#",  "#Topic#",  "#Chapter#",  "#Payload_Length#",  "#Payload_Data#",  "#Hopcount#",  "#CRC#", "#ENDOFMESSAGE#"};
+const unsigned char CRC7_POLY              = 0x91;
 
-//const char RQS_r[] = "RS";
-//const char RQS_q[] = "RQ";
-//const char RQS_i[] = "RI";
-//const char RQS_n[] = "NA";
+static const uint8_t sg_WAIT_INDEX         = 0;
+static const uint8_t sg_PREMESSAGE_INDEX   = 0;
+static const uint8_t sg_SENDER_INDEX       = 1;
+static const uint8_t sg_RECEIVER_INDEX     = 2;
+static const uint8_t sg_RQS_INDEX          = 3;
+static const uint8_t sg_TOPIC_INDEX        = 4;
+static const uint8_t sg_CHAPTER_INDEX      = 5;
+static const uint8_t sg_LENGTH_INDEX       = 6;
+static const uint8_t sg_PAYLOAD_INDEX      = 7;
+static const uint8_t sg_HOPCOUNT_INDEX     = 8;
+static const uint8_t sg_CRC_INDEX          = 9;
 
-int rx_id                               = 0;
-int tx_id                               = 0;
 
-uint8_t  message_counter_global         = 0;
-uint8_t  segment_counter[2]             = {0, 0};
-uint8_t  segment_length[2]              = {0, 0};
-uint8_t  message_counter_port[2]        = {0, 0};
-const uint8_t SEGMENT_MAX_LENGTH[]      = {1, 32, 32, 8, 16, 8, 4, MAX_MESSAGE_PAYLOAD_SIZE, 4, 4};
-uint8_t  colon_counter[2][2]            = {{0, 0}, {0, 0}}; //[port][successive/total]
-bool is_colon[2]                        = {0, 0};
-bool was_colon[2]                       = {0, 0};
+static const char RQS_r[]                  = "RS";
+static const char RQS_q[]                  = "RQ";
+static const char RQS_i[]                  = "RI";
+static const char RQS_n[]                  = "RN";
+static const char RQS_a[]                  = "RA";
 
-int message_index_queue[MAX_MESSAGE_KEEP] = { -1 };
+int rx_id                                  = 0;
+int tx_id                                  = 0;
+
+const uint8_t SEGMENT_MAX_LENGTH[]         = {1, 32, 32, 8, 16, 8, 4, MAX_MESSAGE_PAYLOAD_SIZE, 4, 4};
+
+uint8_t  message_counter_global            = 0;
+uint8_t  segment_counter[2]                = {0, 0};
+uint8_t  segment_length[2]                 = {0, 0};
+uint8_t  message_counter_port[2]           = {0, 0};
+uint8_t  colon_counter[2][2]               = {{0, 0}, {0, 0}}; //[port][successive/total]
+bool     is_colon[2]                       = {0, 0};
+bool     was_colon[2]                      = {0, 0};
+int      rx_segment_lengths[2][10]         = { 0 };
+
+bool     thread_guard                      = 0;
+
+int message_index_queue[MAX_MESSAGE_KEEP]  = { -1 };
 
 uint8_t  (*parse_function_array[13])(uint8_t, int, char);
-uint8_t  (*call_router_functions[8])(uint8_t, int);
-uint8_t  (*uart_write_functions[2])(char*);
+uint8_t  (*call_router_functions[9])(uint8_t, int);
+uint8_t  (*uart_write_functions[2])(char*, int);
 
 char payloads[MAX_MESSAGE_KEEP][MAX_MESSAGE_PAYLOAD_SIZE];
 char payloads_out[MAX_MESSAGE_KEEP][MAX_MESSAGE_PAYLOAD_SIZE];
@@ -134,12 +137,32 @@ int float_to_ascii(char* buf, float f, int p){
         j++;
     }
     buf[j] = 0;
+    return 0;
 }
 
 int len(const char* s){
     int i = 0;
     while (s[i] != 0){ i++; }
     return i;
+}
+
+int cmp_i(char* s1, const char* s2, int l1, int l2){
+    /*Return True if strings compare equal, False if not or if empty.
+     * Assuming null termination.*/
+    //int l1 = len(s1);
+    //int l2 = len(s2);
+    int r = 0;
+    int i = 0;
+    if (l1==l2){
+        if (l1==0){ return r;}
+        else{
+            r = 1;
+            for (int c=0; c<l1; c++){
+                r = r * ((int) s1[c] == (int) s2[c]);
+            }
+        }
+    }
+    return r;
 }
 
 int cmp(char* s1, const char* s2){
@@ -161,6 +184,21 @@ int cmp(char* s1, const char* s2){
     return r;
 }
 
+int copy_str_i(char* buffer, const char* s, int index, int string_len){
+    /*Copy over string items into a buffer.
+     * Provide index = 0 for simple 1-1 copy, for concatting together items
+     * into one buffer, the returned index can be provided for next item.
+     * Assuming null termination.*/
+    int i = 0;
+    //while (s[i] !=0){
+    for (i=0; i<string_len; i++){
+        buffer[index] = s[i];
+        //i++;
+        index++;
+    }
+    return index;
+}
+
 int copy_str(char* buffer, const char* s, int index){
     /*Copy over string items into a buffer.
      * Provide index = 0 for simple 1-1 copy, for concatting together items
@@ -176,7 +214,8 @@ int copy_str(char* buffer, const char* s, int index){
 }
 
 char get_crc(char* buffer, char length){
-    char i, j, crc = 0;
+    char j, crc = 0;
+    int i;
     for (i=0; i<length; i++){
         crc ^= buffer[i];
         for (j=0; j<8; j++){
@@ -184,22 +223,11 @@ char get_crc(char* buffer, char length){
             crc >>= 1;
         }
     }
-    sprintf(log_buffer, "U2U: CRC calculated: %d, for lenght: %d.", crc, length);
-    u2u_logger(log_buffer, 4);
-    sprintf(log_buffer, "\tbuffer:\"%s\".", buffer);
-    u2u_logger(log_buffer, 4);
     //return length;
     return crc;
 }
 
-void log_status(int port, char* func_name, char ch){
-    if (ch==0){
-        sprintf(log_buffer, "U2U: %.6s, prt, ch, MGC, MCP, SC, SL:  %.1d, (%d), %.3d, %.3d, %.3d, %.3d", func_name, port, ch,  message_counter_global, message_counter_port[port], segment_counter[port], segment_length[port]);
-    }else{
-        sprintf(log_buffer, "U2U: %.6s, prt, ch, MGC, MCP, SC, SL:  %.1d, '%c', %.3d, %.3d, %.3d, %.3d", func_name, port, ch,  message_counter_global, message_counter_port[port], segment_counter[port], segment_length[port]);
-    }
-    segment_logger(log_buffer, 4);
-}
+
 
 
 int in_queue(struct Message_Queue *queue, int data) {
@@ -209,29 +237,24 @@ int in_queue(struct Message_Queue *queue, int data) {
     } else {
         queue->count++;
     }
-
     queue->buffer[queue->rear] = data;
     queue->rear = (queue->rear + 1) % MAX_MESSAGE_KEEP;
-    //print();
-    //printf("\n");
     return 0;
 }
 
 int out_queue(struct Message_Queue *queue, int *data) {
+    int return_val = 1;
     if (queue->count == 0) {
         // Queue is empty
+        //return_val = 1;
         return 1;
     }
-
     *data = queue->buffer[queue->front];
     queue->front = (queue->front + 1) % MAX_MESSAGE_KEEP;
     queue->count--;
-
-    //print();
-    //printf("\n");
-    return 0;
+    return_val = 0;
+    return return_val;
 }
-
 
 uint8_t message_clear(uint8_t message_index, int port){
     uint8_t return_val;
@@ -242,14 +265,13 @@ uint8_t message_clear(uint8_t message_index, int port){
     colon_counter[port][1]  = 0;
     is_colon[port]          = 0;
     was_colon[port]         = 0;
+    thread_guard            = 0;
     return return_val;
 }
 
 uint8_t message_reset(uint8_t message_index, int port){
     uint8_t return_val;
     if (message_counter_global<=0){
-        sprintf(log_buffer, "U2U: message_counter_global under-count during message_reset function.");
-        u2u_logger(log_buffer, 2);
     }else{ message_counter_global--; }
     return_val = message_clear(message_index, port);
     return return_val;
@@ -259,16 +281,13 @@ void colon_parser(uint8_t message_index, int port){ //Appending NULL char onto l
     if (segment_counter[port]>0){
         messages[message_index]->Segments[segment_counter[port]][segment_length[port]] = 0; // Null terminating each segment.
     }
+    rx_segment_lengths[port][segment_counter[port]] = segment_length[port];
     segment_counter[port]++;
     segment_length[port] = 0;
-    sprintf(log_buffer, "U2U: colon_parser MGC, MCP, SC, SL: %.3d, %.3d, %.3d, %.3d", message_counter_global, message_counter_port[port], segment_counter[port], segment_length[port]);
-    segment_logger(log_buffer, 4);
 }
 
-bool colon_checker(uint8_t message_index, int port, char ch){ //message_index is ignored
+bool colon_checker(uint8_t message_index, int port, char ch){
     uint8_t return_val;
-    //log_status(port, "_check", ch); //%%TEST%%
-    //log_status(port, "_checker", ch); //%%TEST%%
     if (ch == ':'){
         colon_counter[port][COLONS_TOTAL]++;
         is_colon[port] = 1;
@@ -277,8 +296,6 @@ bool colon_checker(uint8_t message_index, int port, char ch){ //message_index is
             if (segment_counter[port]>2){
                 was_colon[port] = 0;
                 is_colon[port] = 0;
-                //log_status(port, "_chec!", ch); //%%TEST%%
-                //return_val = message_clear(message_index, port); //%%TEST%%
                 return_val = message_reset(message_index, port);
             }
         }
@@ -291,6 +308,10 @@ bool colon_checker(uint8_t message_index, int port, char ch){ //message_index is
 }
 
 uint8_t premessage_setup(uint8_t message_index, int port, char ch){ // message_index is ignored and message_counter_global is written into ~counter_port[~].
+    //npthread_mutex_lock(&thread_guard_mutex);
+    thread_guard = 1;
+    //pthread_mutex_unlock(&thread_guard_mutex);
+
     struct Message* new_message;
     if (colon_checker(message_index, port, ch)){ // Here, message_index doesn't matter.
         /* Here, message_index and message_counter_port are updated and will be referenced */
@@ -299,16 +320,7 @@ uint8_t premessage_setup(uint8_t message_index, int port, char ch){ // message_i
         if (colon_counter[port][COLONS_SUCCESSIVE]>=1){
             message_index = message_counter_global;
             message_counter_port[port] = message_index;
-            if (message_counter_global>=MAX_MESSAGE_KEEP){
-                printf("Message registers overflow\n");
-                sprintf(log_buffer, "U2U: premessage_setup Message registers overflow."); //%%TEST%%
-                u2u_logger(log_buffer, 2); //%%TEST%%
-            }
-            //sprintf(log_buffer, "U2U: premessage_setup Message 1 MCG: %d.", message_counter_global); //%%TEST%%
-            //u2u_logger(log_buffer, 4); //%%TEST%%
             message_counter_global = (message_counter_global + 1) % MAX_MESSAGE_KEEP;
-            //sprintf(log_buffer, "U2U: premessage_setup Message 2 MCG: %d.", message_counter_global); //%%TEST%%
-            //u2u_logger(log_buffer, 2); //%%TEST%%
             new_message = messages[message_index];
             new_message->Index = message_index;
             new_message->Port = port;
@@ -317,12 +329,13 @@ uint8_t premessage_setup(uint8_t message_index, int port, char ch){ // message_i
             new_message->CRC_buffer[0] = ':';
             new_message->CRC_buffer[1] = ':';
             new_message->CRC_buffer[2] = ch;
-            new_message->CRC_index = 3;
-            new_message->CRC_check = 0;
+            new_message->CRC_index     = 3;
+            new_message->intCh_rx      = 3;
+            new_message->CRC_check     = 0;
 
             // Writing first character (and the only one in this function).
             new_message->Segments[segment_counter[port]][segment_length[port]] = ch;
-            segment_length[port] = 1;
+            segment_length[port]       = 1;
             //segment_length[port] = 0;
             //segment_length[port] = (segment_length[port] + 1) % SEGMENT_MAX_LENGTH[segment_counter[port]];
             //segment_length[port] = (segment_length[port] + 1) % MAX_MESSAGE_SIZE;
@@ -339,6 +352,7 @@ uint8_t write_into_segment(uint8_t message_index, int port, char ch){
     rx_id++;
     new_message->CRC_buffer[new_message->CRC_index] = ch;
     new_message->CRC_index++;
+    new_message->intCh_rx++;
     if (colon_checker(message_index, port, ch)){
         colon_parser(message_index, port);
     }else{
@@ -353,6 +367,7 @@ uint8_t write_into_payload_length(uint8_t message_index, int port, char ch){
     struct Message* new_message = messages[message_index];
     new_message->CRC_buffer[new_message->CRC_index] = ch;
     new_message->CRC_index++;
+    new_message->intCh_rx++;
     if (colon_checker(message_index, port, ch)){
         char* pl_length;
         int int_pl_len;
@@ -373,6 +388,7 @@ uint8_t write_into_payload_data(uint8_t message_index, int port, char ch){
     struct Message* new_message = messages[message_index];
     new_message->CRC_buffer[new_message->CRC_index] = ch;
     new_message->CRC_index++;
+    new_message->intCh_rx++;
     uint8_t return_val = 0;
     if (segment_length[port] > new_message->intLength-1){
         new_message->Payload[segment_length[port]] = 0;
@@ -390,35 +406,33 @@ uint8_t write_into_last_segment(uint8_t message_index, int port, char ch){
     int r;
     int crc_val;
     int crc_rx;
+    int hops;
     //if (ch == ':'){ // Call get_crc here
     if (colon_checker(message_index, port, ch)){
+        new_message->intCh_rx++;
         new_message->CRC_buffer[new_message->CRC_index] = 0;
         colon_parser(message_index, port);
         crc_val = get_crc(new_message->CRC_buffer, new_message->CRC_index);
         crc_rx = ascii_to_int(new_message->Segments[sg_CRC_INDEX]);
+        hops = ascii_to_int(new_message->Segments[sg_HOPCOUNT_INDEX]);
+        new_message->intCRC_rx  = crc_rx;
+        new_message->intCRC_cal = crc_val;
+        new_message->intHops    = hops;
 
-        new_message->CRC_check = (crc_rx==crc_val);
+        new_message->CRC_check  = (crc_rx==crc_val);
         new_message->Sender     =  new_message->Segments[sg_SENDER_INDEX];
         new_message->Receiver   =  new_message->Segments[sg_RECEIVER_INDEX];
         new_message->RQ         =  new_message->Segments[sg_RQS_INDEX];
         new_message->Topic      =  new_message->Segments[sg_TOPIC_INDEX];
         new_message->Chapter    =  new_message->Segments[sg_CHAPTER_INDEX];
+        new_message->Hops       =  new_message->Segments[sg_HOPCOUNT_INDEX];
+        new_message->CRC        =  new_message->Segments[sg_CRC_INDEX];
         int i;
-        sprintf(log_buffer, "Message ID: %d received on port %d: crc checked: %d", new_message->ID, port, new_message->CRC_check); //%%TEST%%
-        u2u_logger(log_buffer, 4); //%%TEST%%
         if (new_message->CRC_check==0){
-            sprintf(log_buffer, "   CRC failure on ID: %d CRC_i: %d seg_CRC: '%s', \"%s\".", new_message->ID, new_message->CRC_index,  new_message->Segments[sg_CRC_INDEX], new_message->CRC_buffer); //%%TEST%%
-            u2u_logger(log_buffer, 2);                                                              //%%TEST%%
-            sprintf(log_buffer, "   CRC failure values calculated (val): %d, received (rx): %d.", crc_val,  crc_rx); //%%TEST%%
-            u2u_logger(log_buffer, 2);                                                              //%%TEST%%
-            sprintf(log_buffer, "   CRC segment contents: \"%s\".", new_message->Segments[sg_CRC_INDEX]); //%%TEST%%
-            u2u_logger(log_buffer, 2);                                                              //%%TEST%%
-            sprintf(log_buffer, "   CRC segment contents (ati): %d.", ascii_to_int(new_message->Segments[sg_CRC_INDEX])); //%%TEST%%
-            u2u_logger(log_buffer, 2);                                                              //%%TEST%%
-            sprintf(log_buffer, "   CRC get_crc : %d.", get_crc(new_message->CRC_buffer, new_message->CRC_index)); //%%TEST%%
-            u2u_logger(log_buffer, 2);                                                              //%%TEST%%
         }else{
+            //pthread_mutex_lock(&queue_mutex);
             r = in_queue(&Queue, message_index);
+            //pthread_mutex_unlock(&queue_mutex);
         }
         return_val = message_clear(message_index, port);
         if (new_message->CRC_check || RESPOND_ON_BAD_CRC){
@@ -427,7 +441,11 @@ uint8_t write_into_last_segment(uint8_t message_index, int port, char ch){
     }else{
         new_message->Segments[segment_counter[port]][segment_length[port]] = ch;
         segment_length[port] = (segment_length[port] + 1) % SEGMENT_MAX_LENGTH[segment_counter[port]];
+        new_message->intCh_rx++;
     }
+    //pthread_mutex_lock(&thread_guard_mutex);
+    //thread_guard = 0;
+    //pthread_mutex_unlock(&thread_guard_mutex);
     return return_val;
 }
 
@@ -435,20 +453,25 @@ uint8_t write_into_last_segment(uint8_t message_index, int port, char ch){
 //RQS_r[] = "RS";
 //RQS_q[] = "RQ";
 //RQS_i[] = "RI";
-//RQS_n[] = "NA";
+//RQS_n[] = "RN";
+//RQS_a[] = "RA";
 //
 
 uint8_t determine_addressee(uint8_t message_index, int port){ //0: Other, 1: Self, 2: General.
     struct Message* new_message = messages[message_index];
     uint8_t  router_value = 0;
-    router_value = router_value + (1 * cmp(new_message->Segments[sg_RECEIVER_INDEX], self_name));
-    router_value = router_value + (2 * cmp(new_message->Segments[sg_RECEIVER_INDEX], "GEN"));
-    router_value = router_value + (4 * cmp(new_message->Segments[sg_RQS_INDEX], RQS_i));
-    router_value = router_value + (4 * cmp(new_message->Segments[sg_RQS_INDEX], RQS_r));
-    router_value = router_value + (4 * cmp(new_message->Segments[sg_RQS_INDEX], RQS_n));
+    if (new_message->Segments[sg_RQS_INDEX][0] != 'R'){
+        router_value = 5;
+    }else{
+        router_value = router_value + (1 * cmp(new_message->Segments[sg_RECEIVER_INDEX], self_name));
+        router_value = router_value + (2 * cmp(new_message->Segments[sg_RECEIVER_INDEX], "GEN"));
+        router_value = router_value + (4 * cmp(new_message->Segments[sg_RQS_INDEX], RQS_i));
+        router_value = router_value + (4 * cmp(new_message->Segments[sg_RQS_INDEX], RQS_r));
+        router_value = router_value + (4 * cmp(new_message->Segments[sg_RQS_INDEX], RQS_n));
+        router_value = router_value + (4 * cmp(new_message->Segments[sg_RQS_INDEX], RQS_a));
+    }
+    new_message->Router_val = router_value;
 
-    sprintf(log_buffer, "U2U: det add router value: %d.", router_value);
-    u2u_logger(log_buffer, 4);
     return router_value;
 }
 
@@ -464,6 +487,14 @@ int message_topic_checker(uint8_t message_index, int port, char* buffer){
         }
     }
     return  topic_function_selector;
+}
+
+uint8_t  append_segment_i(char* buffer, const char* str, int index, int string_len){
+    int new_index;
+    new_index = copy_str_i(buffer, str, index, string_len);
+    buffer[new_index] = ':';
+    new_index++;
+    return new_index;
 }
 
 uint8_t  append_segment(char* buffer, const char* str, int index){
@@ -487,7 +518,7 @@ uint8_t  add_crc(char* buffer, int index){
 //const char self_name[] = "BUTTERLING";
 //const char self_name_TEST[] = "SELFNAME";
 
-uint8_t compose_transmit_message(struct Message* message_tx, char* buffer){
+uint8_t compose_transmit_message(struct Message* message_tx, char* buffer, int* message_length){
     uint8_t return_value = 0;
     int index = 0;
     int i = 0;
@@ -506,10 +537,7 @@ uint8_t compose_transmit_message(struct Message* message_tx, char* buffer){
     index++;
     buffer[index] = ':'; //SENDER
     index++;
-    /* %%TEST%%
     index = append_segment(buffer, self_name, index);
-     %%TEST%% */
-    index = append_segment(buffer, self_name_TEST, index); //%%TEST%%
     index = append_segment(buffer, message_tx->Receiver, index);
     index = append_segment(buffer, message_tx->RQ, index);
     index = append_segment(buffer, message_tx->Topic, index);
@@ -521,8 +549,7 @@ uint8_t compose_transmit_message(struct Message* message_tx, char* buffer){
     buffer[index] = ':';
     index++;
     buffer[index] = '\0';
-    sprintf(log_buffer, "U2U: ID: %d, ctm %s.", message_tx->ID, buffer);
-    u2u_logger(log_buffer, 4);
+    *message_length = index;
     return return_value;
 }
 
@@ -530,8 +557,9 @@ uint8_t u2u_send_message_uart0(struct Message* message_tx){
     uint8_t return_value = 0;
     int index = 0;
     char buffer[MAX_MESSAGE_SIZE];
-    return_value = compose_transmit_message(message_tx, buffer);
-    write_from_uart0(buffer); // Calling on u2u_HAL function.
+    int mes_len;
+    return_value = compose_transmit_message(message_tx, buffer, &mes_len);
+    write_from_uart0(buffer, mes_len); // Calling on u2u_HAL function.
     return return_value;
 }
 
@@ -540,28 +568,11 @@ uint8_t u2u_send_message_uart1(struct Message* message_tx){
     int index = 0;
     char buffer[MAX_MESSAGE_SIZE];
     int i;
-    sprintf(log_buffer, "send_message: SENDER: '%s'.", i, message_tx->Sender);
-    u2u_logger(log_buffer, 4);
-    sprintf(log_buffer, "send_message: RECEIVER: '%s'.", i, message_tx->Receiver);
-    u2u_logger(log_buffer, 4);
-    sprintf(log_buffer, "send_message: TOPIC: '%s'.", i, message_tx->Topic);
-    u2u_logger(log_buffer, 4);
-    sprintf(log_buffer, "send_message: intCHAPTER: %d.", i, message_tx->intChapter);
-    u2u_logger(log_buffer, 4);
 
-    return_value = compose_transmit_message(message_tx, buffer);
 
-    sprintf(log_buffer, "send_message: SENDER: '%s'.", i, message_tx->Sender);
-    u2u_logger(log_buffer, 4);
-    sprintf(log_buffer, "send_message: RECEIVER: '%s'.", i, message_tx->Receiver);
-    u2u_logger(log_buffer, 4);
-    sprintf(log_buffer, "send_message: TOPIC: '%s'.", i, message_tx->Topic);
-    u2u_logger(log_buffer, 4);
-    sprintf(log_buffer, "send_message: intCHAPTER: %d.", i, message_tx->intChapter);
-    u2u_logger(log_buffer, 4);
-    sprintf(log_buffer, "send_message: CHAPTER: %d.", i, message_tx->Chapter);
-    u2u_logger(log_buffer, 4);
-    write_from_uart1(buffer); // Calling on u2u_HAL function.
+    int mes_len;
+    return_value = compose_transmit_message(message_tx, buffer, &mes_len);
+    write_from_uart1(buffer, mes_len); // Calling on u2u_HAL function.
     return return_value;
 }
 
@@ -569,13 +580,14 @@ uint8_t u2u_send_message(struct Message* message_tx){
     uint8_t return_value = 0;
     int index = 0;
     char buffer[MAX_MESSAGE_SIZE];
-    return_value = compose_transmit_message(message_tx, buffer);
-    write_from_uart0(buffer); // Calling on u2u_HAL function.
-    write_from_uart1(buffer); // Calling on u2u_HAL function.
+    int mes_len;
+    return_value = compose_transmit_message(message_tx, buffer, &mes_len);
+    write_from_uart0(buffer, mes_len); // Calling on u2u_HAL function.
+    write_from_uart1(buffer, mes_len); // Calling on u2u_HAL function.
     return return_value;
 }
 
-uint8_t compose_response_message(uint8_t message_index, int port, char* buffer){
+uint8_t compose_response_message(uint8_t message_index, int port, char* buffer, int* message_length){
     struct Message* new_message = messages[message_index];
     uint8_t return_value = 0;
     int index = 0;
@@ -611,17 +623,14 @@ uint8_t compose_response_message(uint8_t message_index, int port, char* buffer){
     int_to_ascii(hops_buf, hops, 3);
     index = append_segment(buffer, hops_buf, index);
     index = add_crc(buffer, index);
-    sprintf(log_buffer, "U2U: crm crc for ID: %d: %s.", new_message->ID, buffer);
-    u2u_logger(log_buffer, 4);
     buffer[index] = ':';
     index++;
+    *message_length = index;
     buffer[index] = '\0';
-    sprintf(log_buffer, "U2U: crm: %s.", buffer);
-    u2u_logger(log_buffer, 4);
     return return_value;
 }
 
-uint8_t compose_forward_message(uint8_t message_index, int port, char* buffer){
+uint8_t compose_forward_message(uint8_t message_index, int port, char* buffer, int* message_length){
     struct Message* new_message = messages[message_index];
     uint8_t return_value = 0;
     int index = 0;
@@ -635,11 +644,8 @@ uint8_t compose_forward_message(uint8_t message_index, int port, char* buffer){
     index++;
     for (i=sg_SENDER_INDEX; i<sg_PAYLOAD_INDEX; i++){
         index = append_segment(buffer, new_message->Segments[i], index);
-        //sprintf(log_buffer, "U2U: cfm: %s, segs: %s.", buffer, new_message->Segments[i]);
-        //u2u_logger(log_buffer, 4);
     }
     index = append_segment(buffer, new_message->Payload, index);
-    hops_buf[3];
     hops = ascii_to_int(new_message->Segments[sg_HOPCOUNT_INDEX]);
     hops++;
     int_to_ascii(hops_buf, hops, 3);
@@ -647,9 +653,8 @@ uint8_t compose_forward_message(uint8_t message_index, int port, char* buffer){
     index = add_crc(buffer, index);
     buffer[index] = ':';
     index++;
+    *message_length = index;
     buffer[index] = '\0';
-    sprintf(log_buffer, "U2U: cfm: %s.", buffer);
-    u2u_logger(log_buffer, 4);
     return return_value;
 }
 
@@ -666,10 +671,9 @@ uint8_t compose_forward_message(uint8_t message_index, int port, char* buffer){
 uint8_t self_call(uint8_t message_index, int port){
     uint8_t return_value = 0;
     char buffer[MAX_MESSAGE_SIZE];
-    sprintf(log_buffer, "U2U: self_call  message_index: %d, port: %d.", message_index, port);
-    u2u_logger(log_buffer, 4);
-    return_value = compose_response_message(message_index, port, buffer);
-    return_value = (*uart_write_functions[port])(buffer);
+    int mes_len;
+    return_value = compose_response_message(message_index, port, buffer, &mes_len);
+    return_value = (*uart_write_functions[port])(buffer, mes_len);
     messages[message_index]->For_self = 1;
     messages[message_index]->For_gen = 0;
     return return_value;
@@ -679,11 +683,10 @@ uint8_t other_call(uint8_t message_index, int port){
     uint8_t return_value = 0;
     char buffer[MAX_MESSAGE_SIZE];
     int other_port = 1 - port;
-    sprintf(log_buffer, "U2U: other_call  message_index: %d, port: %d.", message_index, port);
-    u2u_logger(log_buffer, 4);
+    int mes_len;
     //port = 1 - port;
-    return_value = compose_forward_message(message_index, other_port, buffer);
-    return_value = (*uart_write_functions[other_port])(buffer);
+    return_value = compose_forward_message(message_index, other_port, buffer, &mes_len);
+    return_value = (*uart_write_functions[other_port])(buffer, mes_len);
     messages[message_index]->For_self = 0;
     messages[message_index]->For_gen = 0;
     return return_value;
@@ -691,8 +694,6 @@ uint8_t other_call(uint8_t message_index, int port){
 
 uint8_t no_response_call(uint8_t message_index, int port){
     uint8_t return_value = 0;
-    sprintf(log_buffer, "U2U: no_response_call  message_index: %d, port: %d.", message_index, port);
-    u2u_logger(log_buffer, 4);
     messages[message_index]->For_self = 0;
     messages[message_index]->For_gen = 0;
     return return_value;
@@ -702,60 +703,22 @@ uint8_t general_call(uint8_t message_index, int port){
     uint8_t return_value = 0;
     char buffer[MAX_MESSAGE_SIZE];
     int other_port = 1 - port;
-    sprintf(log_buffer, "U2U: general_call  message_index: %d, port: %d.", message_index, port);
-    u2u_logger(log_buffer, 4);
-    return_value = compose_response_message(message_index, port, buffer);
-    return_value = (*uart_write_functions[port])(buffer);
-    return_value = compose_forward_message(message_index, port, buffer);
+    int mes_len;
+    return_value = compose_response_message(message_index, port, buffer, &mes_len);
+    return_value = (*uart_write_functions[port])(buffer, mes_len);
+    return_value = compose_forward_message(message_index, port, buffer, &mes_len);
     //port = 1 - port;
-    return_value = (*uart_write_functions[other_port])(buffer);
+    return_value = (*uart_write_functions[other_port])(buffer, mes_len);
     messages[message_index]->For_self = 1;
     messages[message_index]->For_gen = 1;
     return return_value;
 }
 
-uint8_t format_return_message(uint8_t message_index){
-    uint8_t r = 0;
-    uint8_t i = 0;
-    //sprintf(log_buffer, "U2U: format_return_message START");
-    //u2u_logger(log_buffer, 4);
-/*
-    i = copy_str(messages[message_index]->Sender, messages[message_index]->Segments[sg_SENDER_INDEX], 0);
-    messages[message_index]->Sender[i] = 0;
-    i = copy_str(messages[message_index]->Receiver, messages[message_index]->Segments[sg_RECEIVER_INDEX], 0);
-    messages[message_index]->Receiver[i] = 0;
-    i = copy_str(messages[message_index]->Topic, messages[message_index]->Segments[sg_TOPIC_INDEX], 0);
-    messages[message_index]->Topic[i] = 0;
-    i = copy_str(messages_out[message_index]->Chapter, messages[message_index]->Segments[sg_CHAPTER_INDEX], 0);
-    messages_out[message_index]->Chapter[i] = 0;
-    messages_out[message_index]->Payload = payloads_out[message_index];
-    i = copy_str(messages_out[message_index]->Payload, messages[message_index]->Payload, 0);
-    messages_out[message_index]->Payload[i] = 0;
-    messages_out[message_index]->Topic_number = messages[message_index]->Topic_number;
-    messages_out[message_index]->intLength = messages[message_index]->intLength;
 
-    i = copy_str(messages[message_index]->Sender, messages[message_index]->Segments[sg_SENDER_INDEX], 0);
-    messages[message_index]->Sender[i] = 0;
-    i = copy_str(messages[message_index]->Receiver, messages[message_index]->Segments[sg_RECEIVER_INDEX], 0);
-    messages[message_index]->Receiver[i] = 0;
-    i = copy_str(messages[message_index]->Topic, messages[message_index]->Segments[sg_TOPIC_INDEX], 0);
-    messages[message_index]->Topic[i] = 0;
-    i = copy_str(messages[message_index]->Chapter, messages[message_index]->Segments[sg_CHAPTER_INDEX], 0);
-    messages[message_index]->Chapter[i] = 0;
-    messages[message_index]->Payload = payloads_out[message_index];
-    i = copy_str(messages[message_index]->Payload, messages[message_index]->Payload, 0);
-    messages[message_index]->Payload[i] = 0;
-    messages[message_index]->Topic_number = messages[message_index]->Topic_number;
-    messages[message_index]->intLength = messages[message_index]->intLength;
-*/
-    //sprintf(log_buffer, "U2U: format_return_message  message_index: %d.", message_index);
-    //u2u_logger(log_buffer, 4);
-    return r;
-}
+    ////sprintf(log_buffer, "U2U: format_return_message  message_index: %d.", message_index);
+    ////u2u_logger(log_buffer, 4);
 
 uint8_t message_processor(uint8_t message_index){
-    //sprintf(log_buffer, "U2U: message_processor START");
-    //u2u_logger(log_buffer, 4);
     uint8_t r = 0;
     int res = 0;
     int port = messages[message_index]->Port;
@@ -767,63 +730,37 @@ uint8_t message_processor(uint8_t message_index){
         router_value = determine_addressee(message_index, port);
     }
     res = (*call_router_functions[router_value])(message_index, port);
-    //r = format_return_message(message_index);
-    //return_message = messages_out[message_index];
     return r;
 }
 
+int copy_message(uint8_t m){
 
-//struct Message* message_processor(){
-//    //printf("mp\n");
-//    struct Message* return_message;
-//    return_message = NULL;
-//    if (i_message_ready){
-//        i_message_ready = 0;
-//        uint8_t m;
-//        uint8_t r = 1;
-//
-//        for (m=0; m<message_counter_global; m++){
-//
-//            int res;
-//            int port = messages[m]->Port;
-//            int router_value = determine_addressee(m, port);
-//            res = (*call_router_functions[router_value])(m, port);
-//            r = format_return_message(m);
-//            return_message = messages_out[m];
-//        }
-//        message_counter_global = 0;
-//    }
-//    return return_message;
-//}
+    int i, r;
+    int port = 0;
+    mo.Port = messages[m]->Port;
 
-//struct Message* get_message(){
-//    struct Message* return_message;
-//    return_message = 0;
-//    //static int first_index = 0;
-//    uint8_t r = 1;
-//    if (i_message_ready){
-//        int res;
-//        int port = messages[first_index]->Port;
-//        int router_value = determine_addressee(first_index, port);
-//        res = (*call_router_functions[router_value])(first_index, port);
-//
-//        r = format_return_message(router_value);
-//        return_message = messages_out[router_value];
-//        i_message_ready = 0;
-//
-//    }
-//    return return_message;
-//}
+    for (i=0; i<rx_segment_lengths[port][sg_SENDER_INDEX]; i++){
+        mo_sender[i] = messages[m]->Sender[i];
+    }
+    for (i=0; i<rx_segment_lengths[port][sg_RECEIVER_INDEX]; i++){
+        mo_receiver[i] = messages[m]->Receiver[i];
+    }
+    for (i=0; i<rx_segment_lengths[port][sg_PAYLOAD_INDEX]; i++){
+        mo_payload[i] = messages[m]->Payload[i];
+    }
+    return 0;
+}
 
 struct Message* get_message(){
-    //struct Message* m;
-    int i, r, m;
-    r = out_queue(&Queue, &m);
-    if (r==0){
-        return messages[m];
-    }else{
-        return NULL;
-    }
+    int r, m;
+
+        r = out_queue(&Queue, &m);
+        if (r==0){
+            return messages[m];
+        }else{
+            return NULL;
+        }
+//    }
 }
 
 uint8_t u2u_topic_exchange(char* custom_payload, uint8_t topic_number){
@@ -841,20 +778,11 @@ uint8_t uart_character_processor(char ch){
 
 /*This is called by u2u_HAL on UART rx interupt.*/
 uint8_t uart0_character_processor(char ch){
-    //sprintf(log_buffer, "U2U: uart0_character_processor START");
-    //u2u_logger(log_buffer, 4);
     int port = 0; // Original Port definition.
-    //printf("U0CP: %d, %c, %d, %d, %s\n", message_counter_global, ch, segment_counter[port], segment_length[port], message_segment_labels[segment_counter[port]]);
     uint8_t res;
     /* Before premessage_setup() message_counter_port's value will be ignored. Which is good because they are defaulted to null. */
     uint8_t message_index = message_counter_port[port];
     res = (*parse_function_array[segment_counter[port]])(message_index, port, ch);
-    if (ch==0){
-        //sprintf(log_buffer, "U2U: uart0_character_processor ch: (%d), message_index: %d, port: %d, segment_counter[port]: %d", ch, message_index, port, segment_counter[port]);
-    }else{
-        //sprintf(log_buffer, "U2U: uart0_character_processor ch: '%c', message_index: %d, port: %d, segment_counter[port]: %d", ch, message_index, port, segment_counter[port]);
-    }
-    //u2u_logger(log_buffer, 4);
     return 0;
 }
 
@@ -865,61 +793,31 @@ uint8_t uart1_character_processor(char ch){
     uint8_t res;
     uint8_t  message_index = message_counter_port[port];
     res = (*parse_function_array[segment_counter[port]])(message_index, port, ch);
-    if (ch==0){
-        //sprintf(log_buffer, "U2U: uart1_character_processor ch: (%d), message_index: %d, port: %d, segment_counter[port]: %d", ch, message_index, port, segment_counter[port]);
-    }else{
-        //sprintf(log_buffer, "U2U: uart1_character_processor ch: '%c', message_index: %d, port: %d, segment_counter[port]: %d", ch, message_index, port, segment_counter[port]);
-    }
-    //u2u_logger(log_buffer, 4);
     return 0;
 }
 
-//
-//void uart0_irq_routine(void){
-//    int r;
-//    //gpio_put(LED_2, 1);
-//    while (uart_is_readable(uart0)){
-//        uint8_t ch = uart_getc(uart0);
-//        r = uart0_character_processor(ch);
-//    }
-//}
-//
-//void uart1_irq_routine(void){
-//    int r;
-//    //gpio_put(LED_3, 1);
-//    while (uart_is_readable(uart1)){
-//        uint8_t ch = uart_getc(uart1);
-//        r = uart1_character_processor(ch);
-//    }
-//}
-//
-//
 
-void u2u_message_setup(){
+int u2u_message_setup(){
     int i, res;
 
-    //struct Queue queue = { .front = 0, .rear = 0, .count = 0 };
-
-    Queue.front = 0;
-    Queue.rear = 0;
-    Queue.count = 0;
-
-    sprintf(log_buffer, "U2U: u2u_message_setup %d", MAX_MESSAGE_KEEP);
-    u2u_logger(log_buffer, 4);
-
-    //printf("Message stack being set up\n");
-    messages[0] = &mi0;
-    messages[1] = &mi1;
-    messages[2] = &mi2;
-    messages[3] = &mi3;
-    messages[4] = &mi4;
-    messages[5] = &mi5;
-    messages[6] = &mi6;
-    messages[7] = &mi7;
-    segment_counter[0]  = 0;
-    segment_length[0]   = 0;
-    segment_counter[1]  = 0;
-    segment_length[1]   = 0;
+    mo.Sender = mo_sender;
+    mo.Receiver = mo_receiver;
+    mo.Payload = mo_payload;
+    Queue.front                                 = 0;
+    Queue.rear                                  = 0;
+    Queue.count                                 = 0;
+    messages[0]                                 = &mi0;
+    messages[1]                                 = &mi1;
+    messages[2]                                 = &mi2;
+    messages[3]                                 = &mi3;
+    messages[4]                                 = &mi4;
+    messages[5]                                 = &mi5;
+    messages[6]                                 = &mi6;
+    messages[7]                                 = &mi7;
+    segment_counter[0]                          = 0;
+    segment_length[0]                           = 0;
+    segment_counter[1]                          = 0;
+    segment_length[1]                           = 0;
     //parse_function_array[sg_WAIT_INDEX]         = &wait_for_segment;
     parse_function_array[sg_PREMESSAGE_INDEX]   = &premessage_setup;
     parse_function_array[sg_SENDER_INDEX]       = &write_into_segment;        // Sender
@@ -932,19 +830,30 @@ void u2u_message_setup(){
     parse_function_array[sg_HOPCOUNT_INDEX]     = &write_into_segment;        // Hopcount
     parse_function_array[sg_CRC_INDEX]          = &write_into_last_segment;   // CRC etc.
 
-    call_router_functions[0] = &other_call;
-    call_router_functions[1] = &self_call;
-    call_router_functions[2] = &general_call;
-    call_router_functions[3] = &general_call;
-    call_router_functions[4] = &other_call;
-    call_router_functions[5] = &no_response_call;
-    call_router_functions[6] = &other_call;
-    call_router_functions[7] = &other_call;
-    call_router_functions[8] = &other_call;
 
-    uart_write_functions[0] = &write_from_uart0;
-    uart_write_functions[1] = &write_from_uart1;
-    //sprintf(log_buffer, "U2U: u2u_message_setup");
-    //u2u_logger(log_buffer, 4);
+    call_router_functions[0]                    = &other_call;
+    call_router_functions[1]                    = &self_call;
+    call_router_functions[2]                    = &general_call;
+    call_router_functions[3]                    = &general_call;
+    call_router_functions[4]                    = &other_call;
+    call_router_functions[5]                    = &no_response_call;
+    call_router_functions[6]                    = &other_call;
+    call_router_functions[7]                    = &other_call;
+    call_router_functions[8]                    = &other_call;
+
+    uart_write_functions[0]                     = &write_from_uart0;
+    uart_write_functions[1]                     = &write_from_uart1;
+    if (u2u_uart_setup()){
+        return 1;
+    }
+    return 0;
 
 }
+
+
+int u2u_close(void){
+    int r;
+    r = u2u_uart_close();
+    return r;
+}
+
