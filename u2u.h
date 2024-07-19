@@ -26,69 +26,61 @@
 #define MAX_MESSAGE_PAYLOAD_SIZE 255
 #define MAX_MESSAGE_SIZE 512
 
-//#define BAUD_RATE 115200
-//#define DATA_BITS 8
-//#define STOP_BITS 1
-//#define PARITY UART_PARITY_NONE
-//#define UART_IN uart1    //to DS9
-//#define UART_OUT uart0
 
 //const char* topic_list[] = { "HAIL", "HELP", "SET LCD", "SET OLED", "GET SENSOR", "SET ENCODER", "GET ENCODER", "SET LED", "SET TIME", "GET TIME", "SET DATE", "GET DATE", "RESERVED 0", "RESERVED 1", "RESERVED 2", "RESERVED 3"};
 
-//extern const uint8_t sg_WAIT_INDEX         ;
-//extern const uint8_t sg_PREMESSAGE_INDEX   ;
-//extern const uint8_t sg_SENDER_INDEX       ;
-//extern const uint8_t sg_RECEIVER_INDEX     ;
-//extern const uint8_t sg_RQS_INDEX          ;
-//extern const uint8_t sg_TOPIC_INDEX        ;
-//extern const uint8_t sg_CHAPTER_INDEX      ;
-//extern const uint8_t sg_LENGTH_INDEX       ;
-//extern const uint8_t sg_PAYLOAD_INDEX      ;
-//extern const uint8_t sg_HOPCOUNT_INDEX     ;
-//extern const uint8_t sg_CRC_INDEX          ;
 
 
 struct    Message{
-    int  ID;
-    int   intChapter;
-    const char*  Sender;
-    const char*  Receiver;
-    const char*  RQ;
-    const char*  Topic;
-    const char*  Chapter;
-    const char*  CRC;
-    const char*  Hops;
-    int   intLength;
-    int   intCh_rx;
+    int             ID;
+    int             intChapter;
+    const char*     Sender;
+    const char*     Receiver;
+    const char*     RQ;
+    const char*     Topic;
+    const char*     Chapter;
+    const char*     CRC;
+    const char*     Hops;
+    int             segment_len[12];
+    int             intLength;
+    int             intCh_rx;
 
-    int   Index;
-    int   intRQ;
-    char  Segments[12][32];
-    char* Payload;
-    int   Port;
-    int   intCRC_rx;
-    int   intCRC_cal;
-    int   intHops;
-    char  CRC_buffer[255];
-    int   CRC_index;
-    bool  CRC_check;
-    int   Topic_number;
-    int   Router_val;
-    bool  For_self;
-    bool  For_gen;
-    bool  Cleared;
+    int             Index;
+    int             intRQ;
+    char            Segments[12][32];
+    char*           Payload;
+    int             Port;
+    int             intCRC_rx;
+    int             intCRC_cal;
+    int             intHops;
+    char            CRC_buffer[255];
+    int             CRC_index;
+    bool            CRC_check;
+    int             Topic_number;
+    int             Router_val;
+    bool            For_self;
+    bool            For_gen;
+    bool            Cleared;
+    bool            Manual_response_waiting;
 
     //bool  RQ_flags[4]; //[0]: R, [1]: Q, [2]: I, [3]: N.
 };
 
 
 struct Message_Queue {
-    int buffer[MAX_MESSAGE_KEEP];
-    int front;
-    int rear;
-    int count;
+    int             buffer[MAX_MESSAGE_KEEP];
+    int             front;
+    int             rear;
+    int             count;
 } ;
 
+
+struct U2U_error {
+    int             errors[2];
+    int             crc_errors[2];
+    int             r_failures[2];
+    int             tfs[2];
+};
 
 //extern const char RQS_r[];
 //extern const char RQS_q[];
@@ -96,35 +88,63 @@ struct Message_Queue {
 //extern const char RQS_n[];
 
 /*Inbound messages are stored in 'messages'*/
-struct Message* messages[MAX_MESSAGE_KEEP];
+extern struct Message* messages[MAX_MESSAGE_KEEP];
 //struct Message* messages_out[MAX_MESSAGE_KEEP];
 
 
 /*General purpose functions*/
-int ascii_to_int(char* str);
-void int_to_ascii(char* buf, int i, int p) ;
-int float_to_ascii(char* buf, float f, int p);
-int len(const char* s);
-int cmp(char* s1, const char* s2);
-int copy_str(char* buffer, const char* s, int index);
-char get_crc(char* buffer, char length);
+int     ascii_to_int(char* str);
+int     ascii_to_int_i(char* str, int len); // Not reliant on NULL termination.
+void    int_to_ascii(char* buf, int i, int p) ;
+int     float_to_ascii(char* buf, float f, int p);
+int     len(const char* s);
+int     cmp(char* s1, const char* s2);
+int     cmp_i(char* s1, const char* s2, int l1, int l2);
+int     copy_str(char* buffer, const char* s, int index);
+int     copy_str_i(char* buffer, const char* s, int index, int string_len);
+char    get_crc(char* buffer, char length);
+int     in_queue(struct Message_Queue *queue, int data);
+int     out_queue(struct Message_Queue *queue, int *data);
 
-int in_queue(struct Message_Queue *queue, int data);
-int out_queue(struct Message_Queue *queue, int *data);
 
-/*Function to sequence the segments indicated by a ':'.*/
+/*Function declarations for matrix parsing:
+ * f_[mo][m][seg_i], where:
+ *      mo:     <0> if previous ch was not colon
+ *      mo:     <1> if previous ch was  colon
+ *      m:      <0> if  ch is not colon
+ *      m:      <1> if  ch is  colon
+ *      seg_i:  <n> Segment index n
+ *      x:      Don't care
+ */
+uint8_t f_000_message_clear(int message_index, int port, char ch); // Message clear
+uint8_t f_110_two_colons(int message_index, int port, char ch); // Two successive colons.
+uint8_t f_111_three_colons(int message_index, int port, char ch); // Three successives colons for some reason.
+uint8_t f_11x(int message_index, int port, char ch); // Two successive colon mid message.
+uint8_t f_100(int message_index, int port, char ch); // Should not be invoked.
+uint8_t f_00x(int message_index, int port, char ch); // Second+ character written into segments.
+uint8_t f_10x(int message_index, int port, char ch); // First character written into segments.
+uint8_t f_01x(int message_index, int port, char ch); // Colon marker for second+ segments.
+uint8_t f_016(int message_index, int port, char ch); // Segment for payload LENGTH is in.
+uint8_t f_xx7(int message_index, int port, char ch); // Writing into PAYLOAD.
+uint8_t f_x08_penultimate_segment(int message_index, int port, char ch); // Writing into penultimate segment.
+uint8_t f_018_marking_last_segment(int message_index, int port, char ch); // Marking start last segment.
+uint8_t f_x09_writing_into_last_segment(int message_index, int port, char ch); // Writing into last segment.
+uint8_t f_019_message_complete(int message_index, int port, char ch); // Last colon. Message is complete.
+
+
 uint8_t message_clear(uint8_t message_index, int port);
-uint8_t message_reset(uint8_t message_index, int port);
-void colon_parser(uint8_t message_index, int port); //Appending NULL char onto last pos in segment;
-
-bool colon_checker(uint8_t message_index, int port, char ch); //message_index is ignored
-uint8_t premessage_setup(uint8_t message_index, int port, char ch); // message_index is ignored and message_counter_global is written into ~counter_port[~];
 uint8_t write_into_segment(uint8_t message_index, int port, char ch);
-uint8_t write_into_payload_length(uint8_t message_index, int port, char ch);
-uint8_t write_into_payload_data(uint8_t message_index, int port, char ch);
-uint8_t last_segment(uint8_t message_index, int port, char ch);
+void log_outbound_message(char* buffer, int mes_len, int pdr);
+void log_inbound_message(uint8_t message_index, int port);
+int write_crc_buffer(int message_index, int port, char ch);
+uint8_t write_into_payload(int message_index, int port, char ch);
+uint8_t message_start(int _, int port, char ch); // Variable message_index is not valid here.
+struct Message* get_message();
+
+/* Message processing. */
 uint8_t determine_addressee(uint8_t message_index, int port); //0: Other, 1: Self, 2: General;
-int message_topic_checker(uint8_t message_index, int port, char* buffer);
+int     topic_to_int(char* topic);
+int     message_topic_checker(uint8_t message_index, int port, char* buffer);
 uint8_t append_segment(char* buffer, const char* str, int index);
 uint8_t add_crc(char* buffer, int index);
 uint8_t compose_transmit_message(struct Message* message_tx, char* buffer, int* message_length);
@@ -133,8 +153,11 @@ uint8_t u2u_send_message_uart1(struct Message* message_tx);
 uint8_t u2u_send_message(struct Message* message_tx);
 uint8_t compose_response_message(uint8_t message_index, int port, char* buffer, int* message_length);
 uint8_t compose_forward_message(uint8_t message_index, int port, char* buffer, int* message_length);
+uint8_t process_message(int message_index, int port); // Writing into last segment.
 //uint8_t write_from_uart0(char* buffer);
 //uint8_t write_from_uart1(char* buffer);
+
+/* Message responding. */
 uint8_t self_call(uint8_t message_index, int port);
 uint8_t other_call(uint8_t message_index, int port);
 uint8_t no_response_call(uint8_t message_index, int port);
@@ -144,19 +167,23 @@ uint8_t general_call(uint8_t message_index, int port);
 uint8_t format_return_message(uint8_t message_index);
 
 /* Completion of writing into last segment calls to process message for responses (if any).*/
-uint8_t  message_processor(uint8_t message_index);
-
-struct Message* get_message();
-
+uint8_t message_processor(uint8_t message_index);
+struct  Message* get_message();
 uint8_t u2u_topic_exchange(char* custom_payload, uint8_t topic_number);
-uint8_t uart_character_processor(char ch);
-uint8_t uart0_character_processor(char ch);
-uint8_t uart1_character_processor(char ch);
+uint8_t  uart_character_processor(char ch);
+
+/* Inbound message handler entry point. */
+uint8_t  uart0_character_processor(char ch);
+uint8_t  uart1_character_processor(char ch);
+uint8_t  character_processor(uint8_t port, char ch);
+void     parser_setup();
+uint8_t  u2u_self_test(uint8_t port); // %%MATRIX%%
 //void uart0_irq_routine(void);
 //void uart1_irq_routine(void);
-int u2u_message_setup();
-int u2u_close(void);
-//void testfunc(char* s, int port);
+
+/* Alpha and Omega. */
+uint8_t     u2u_message_setup();
+uint8_t     u2u_close(void);
 
 
 #endif
