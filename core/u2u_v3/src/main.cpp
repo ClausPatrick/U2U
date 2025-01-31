@@ -106,7 +106,7 @@ int main(int argc, char* argv[]){
     mock_payload_0[12] = 'a';
     mock_payload_1[12] = 'b';
 
-    if (argc>0){                // Arguments present.
+    if (argc>2){                // Arguments present.
         int first_arg = ascii_to_int(argv[1]);
         int port = ascii_to_int(argv[2]);
         if (port<0 || port>1){ port = 0; }
@@ -134,6 +134,26 @@ int main(int argc, char* argv[]){
         sprintf(log_buffer, "MAIN: Done.");
         logger(log_buffer, 4);
     }else{
+        printf("Usage: %s <mode> <port> [additional arguments]\n", argv[0]);
+        printf("\n");
+        printf("Modes:\n");
+        printf("  0 - Send Test\n");
+        printf("       Usage: %s 0 <port> <arg1> <arg2> <arg3> <arg4> <arg5>\n", argv[0]);
+        printf("       Example: %s 0 1 RECEIVER RQS TOPIC CHAPTER PAYLOAD\n", argv[0]);
+        printf("\n");
+        printf("  1 - Receive Test\n");
+        printf("       Usage: %s 1 <port> <arg1>\n", argv[0]);
+        printf("       Example: %s 1 0 MESSAGE (Formatted as per U2U standard.)\n", argv[0]);
+        printf("\n");
+        printf("  2 - Self Test\n");
+        printf("       Usage: %s 2 <port>\n", argv[0]);
+        printf("       Example: %s 2 1\n", argv[0]);
+        printf("\n");
+        printf("Port values:\n");
+        printf("  0 - Port 0\n");
+        printf("  1 - Port 1\n");
+        printf("\n");
+        printf("Error: No arguments provided, will quit for now.\n");
         return 1;
     }
     return 0;

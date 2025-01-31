@@ -18,7 +18,7 @@
 int hash_table[MAX_TABLE_SIZE];
 struct Message_Queue Queue[2];
 static char log_buffer[1024];   
-const char* test_messages = "/home/pi/c_taal/u2u/test_messages/test_messages.txt";
+const char* test_messages = "/home/pi/c_taal/u2u/tests/test_messages/test_messages.txt";
 static const char default_response[] = "U2U testing module.";
 
 /* String constants against which topics are compared */
@@ -83,7 +83,7 @@ struct Parser {
 
 
 int         message_counter_global;
-struct      Parser P[MAX_PORTS];
+struct      Parser parser[MAX_PORTS];
 struct      Message M;
 struct      Message* messages[MAX_MESSAGE_KEEP];
 struct      Message mi0, mi1, mi2, mi3, mi4, mi5, mi6, mi7;
@@ -434,13 +434,13 @@ uint8_t  write_into_segment(uint8_t  message_index, int port, char ch) {
     uint8_t return_val = 0;
     struct Message* new_message;
     new_message = messages[message_index];
-    int P_seg_index = P[port].segment_index;
-    int P_char_index = P[port].character_index;
+    int P_seg_index = parser[port].segment_index;
+    int P_char_index = parser[port].character_index;
 
     if (P_char_index <= SEGMENT_MAX_LENGTH[P_seg_index]){
         new_message->Segments[P_seg_index][P_char_index] = ch;
         P_char_index++;
-        P[port].character_index = P_char_index;
+        parser[port].character_index = P_char_index;
         new_message->segment_len[P_seg_index] = P_char_index;
 
         if (P_seg_index<sg_CRC_INDEX){
@@ -454,22 +454,22 @@ uint8_t write_into_payload(int message_index, int port, char ch) {
     uint8_t return_val = 0;
     struct Message* new_message;
     new_message = messages[message_index];
-    int P_seg_index = P[port].segment_index;
-    int P_char_index = P[port].character_index;
+    int P_seg_index = parser[port].segment_index;
+    int P_char_index = parser[port].character_index;
 
     if (P_char_index <= SEGMENT_MAX_LENGTH[P_seg_index] && P_char_index < new_message->intLength){
         new_message->Payload[P_char_index] = ch;
         write_crc_buffer(message_index, port, ch);
         P_char_index++;
-        P[port].character_index = P_char_index;
+        parser[port].character_index = P_char_index;
         new_message->segment_len[P_seg_index] = P_char_index;
         //sprintf(log_buffer, "%s Payload: <%s>.", __func__, new_message->Payload);     // %%TEST%%
         //u2u_logger(log_buffer, 4);        // %%TEST%%
     }else{
         write_crc_buffer(message_index, port, ':');
         P_seg_index++;
-        P[port].segment_index = P_seg_index;
-        P[port].character_index = 0;
+        parser[port].segment_index = P_seg_index;
+        parser[port].character_index = 0;
         //sprintf(log_buffer, "%s Payload: <%s>.", __func__, new_message->Payload);     // %%TEST%%
         //u2u_logger(log_buffer, 4);        // %%TEST%%
     }
@@ -478,18 +478,18 @@ uint8_t write_into_payload(int message_index, int port, char ch) {
 
 uint8_t message_clear(uint8_t message_index, int port){
     uint8_t return_val = 0;
-    P[port].rx_i = 0;
-    P[port].segment_index = 0;
-    P[port].character_index = 0;
-    //P[port].prx_ch = 0;
-    sprintf(log_buffer, "%s:: mgc: %d, Pm_i: %d, p: %d, mi: %d.", __func__, message_counter_global, P[port].message_index, port, message_index);        // %%TEST%% // %%MATRIX%%
+    parser[port].rx_i = 0;
+    parser[port].segment_index = 0;
+    parser[port].character_index = 0;
+    //parser[port].prx_ch = 0;
+    sprintf(log_buffer, "%s:: mgc: %d, Pm_i: %d, p: %d, mi: %d.", __func__, message_counter_global, parser[port].message_index, port, message_index);        // %%TEST%% // %%MATRIX%%
     matrix_logger(log_buffer, 4);      // %%TEST%% // %%MATRIX%%
     return return_val;
 }
 
 uint8_t f_000_message_clear(int message_index, int port, char ch) {  // Message clear
     uint8_t return_val = 0;
-    sprintf(log_buffer, "%s:: mgc: %d, Pm_i: %d, p: %d, mi: %d.", __func__, message_counter_global, P[port].message_index, port, message_index);        // %%TEST%% // %%MATRIX%%
+    sprintf(log_buffer, "%s:: mgc: %d, Pm_i: %d, p: %d, mi: %d.", __func__, message_counter_global, parser[port].message_index, port, message_index);        // %%TEST%% // %%MATRIX%%
     matrix_logger(log_buffer, 4);      // %%TEST%% // %%MATRIX%%
     message_clear(message_index, port);
     return return_val;
@@ -498,25 +498,25 @@ uint8_t f_000_message_clear(int message_index, int port, char ch) {  // Message 
 uint8_t message_start(int _, int port, char ch) { // Variable message_index is not valid here.
     uint8_t return_val = 0;                                             //bB
     struct Message* new_message;
-    //P[port].message_index = message_counter_global;
-    P[port].message_index = (P[port].message_index + 1) % MAX_MESSAGE_KEEP;
-    int message_index = P[port].message_index;
+    //parser[port].message_index = message_counter_global;
+    parser[port].message_index = (parser[port].message_index + 1) % MAX_MESSAGE_KEEP;
+    int message_index = parser[port].message_index;
     new_message = messages[message_index];
-    P[port].character_index = 0;
-    P[port].segment_index = 1;
-    P[port].prx_ch = 0;
+    parser[port].character_index = 0;
+    parser[port].segment_index = 1;
+    parser[port].prx_ch = 0;
     new_message->CRC_index = 0;
     write_crc_buffer(message_index, port, ':');
     write_crc_buffer(message_index, port, ':');
     message_counter_global = (message_counter_global + 1) % MAX_MESSAGE_KEEP;
-    sprintf(log_buffer, "%s:: mgc: %d, Pm_i: %d, p: %d, mi: %d.", __func__, message_counter_global, P[port].message_index, port, message_index);        // %%TEST%% // %%MATRIX%%
+    sprintf(log_buffer, "%s:: mgc: %d, Pm_i: %d, p: %d, mi: %d.", __func__, message_counter_global, parser[port].message_index, port, message_index);        // %%TEST%% // %%MATRIX%%
     matrix_logger(log_buffer, 4);      // %%TEST%% // %%MATRIX%%
     return return_val;
 }
 
 uint8_t f_110_two_colons(int message_index, int port, char ch) { // Two successive colons.
     uint8_t return_val = 0;
-    sprintf(log_buffer, "%s:: mgc: %d, Pm_i: %d, p: %d, mi: %d, ch: %c.", __func__, message_counter_global, P[port].message_index, port, message_index, ch);        // %%TEST%% // %%MATRIX%%
+    sprintf(log_buffer, "%s:: mgc: %d, Pm_i: %d, p: %d, mi: %d, ch: %c.", __func__, message_counter_global, parser[port].message_index, port, message_index, ch);        // %%TEST%% // %%MATRIX%%
     matrix_logger(log_buffer, 4);      // %%TEST%% // %%MATRIX%%
     message_start(message_index, port, ch);
     return return_val;
@@ -524,7 +524,7 @@ uint8_t f_110_two_colons(int message_index, int port, char ch) { // Two successi
 
 uint8_t f_111_three_colons(int message_index, int port, char ch) { // Three successives colons for some reason.
     uint8_t return_val = 0;
-    sprintf(log_buffer, "%s:: mgc: %d, Pm_i: %d, p: %d, mi: %d, ch: %c.", __func__, message_counter_global, P[port].message_index, port, message_index, ch);        // %%TEST%% // %%MATRIX%%
+    sprintf(log_buffer, "%s:: mgc: %d, Pm_i: %d, p: %d, mi: %d, ch: %c.", __func__, message_counter_global, parser[port].message_index, port, message_index, ch);        // %%TEST%% // %%MATRIX%%
     matrix_logger(log_buffer, 4);      // %%TEST%% // %%MATRIX%%
     message_clear(message_index, port);
     message_start(message_index, port, ch);
@@ -533,7 +533,7 @@ uint8_t f_111_three_colons(int message_index, int port, char ch) { // Three succ
 
 uint8_t f_11x(int message_index, int port, char ch) { // Two successive colon mid message.
     uint8_t return_val = 0;
-    sprintf(log_buffer, "%s:: mgc: %d, Pm_i: %d, p: %d.", __func__, message_counter_global, P[port].message_index, port);       // %%TEST%% // %%MATRIX%%
+    sprintf(log_buffer, "%s:: mgc: %d, Pm_i: %d, p: %d.", __func__, message_counter_global, parser[port].message_index, port);       // %%TEST%% // %%MATRIX%%
     matrix_logger(log_buffer, 4);      // %%TEST%% // %%MATRIX%%
     message_start(message_index, port, ch);
     return return_val;
@@ -559,8 +559,8 @@ uint8_t f_10x(int message_index, int port, char ch) { // First character written
 uint8_t f_01x(int message_index, int port, char ch) { // Colon marker for second+ segments.
     uint8_t return_val = 0;
     write_crc_buffer(message_index, port, ':');
-    P[port].character_index = 0;
-    P[port].segment_index = P[port].segment_index + 1;
+    parser[port].character_index = 0;
+    parser[port].segment_index = parser[port].segment_index + 1;
 
     sprintf(log_buffer, "%s, m i: %d, p: %d, c: %d.", __func__, message_index, port, ch);      // %%TEST%% // %%MATRIX%%
     matrix_logger(log_buffer, 4);        // %%TEST%% // %%MATRIX%%
@@ -571,8 +571,8 @@ uint8_t f_016(int message_index, int port, char ch) { // Segment for payload LEN
     uint8_t return_val = 0;
     struct Message* new_message;
     new_message = messages[message_index];
-    int P_seg_index = P[port].segment_index;
-    int P_char_index = P[port].character_index;
+    int P_seg_index = parser[port].segment_index;
+    int P_char_index = parser[port].character_index;
     //int seg_cur_len = new_message->segment_len[P_seg_index];
     int payload_len = ascii_to_int_i(new_message->Segments[P_seg_index], P_char_index);
     new_message->intLength = payload_len;
@@ -581,8 +581,8 @@ uint8_t f_016(int message_index, int port, char ch) { // Segment for payload LEN
 
     //sprintf(log_buffer, "%s P_seg_index: %d, P_char_index: %d, pay len: <%d>.", __func__, P_seg_index, P_char_index, payload_len);        // %%TEST%%
     //logger(log_buffer, 4);        // %%TEST%%
-    P[port].character_index = 0;
-    P[port].segment_index = P[port].segment_index + 1;
+    parser[port].character_index = 0;
+    parser[port].segment_index = parser[port].segment_index + 1;
     sprintf(log_buffer, "%s, m i: %d, p: %d, c: %d.", __func__, message_index, port, ch);      // %%TEST%% // %%MATRIX%%
     matrix_logger(log_buffer, 4);        // %%TEST%% // %%MATRIX%%
     return return_val;
@@ -602,9 +602,9 @@ uint8_t f_x08_penultimate_segment(int message_index, int port, char ch) { // Wri
 uint8_t f_018_marking_last_segment(int message_index, int port, char ch) { // Marking start last segment. CRC should follow.
     uint8_t return_val = 0;
     write_crc_buffer(message_index, port, ':');
-    P[port].character_index = 0;
-    P[port].segment_index = P[port].segment_index + 1;
-    sprintf(log_buffer, "%s:: mgc: %d, Pm_i: %d, p: %d, mi: %d.", __func__, message_counter_global, P[port].message_index, port, message_index);        // %%TEST%% // %%MATRIX%%
+    parser[port].character_index = 0;
+    parser[port].segment_index = parser[port].segment_index + 1;
+    sprintf(log_buffer, "%s:: mgc: %d, Pm_i: %d, p: %d, mi: %d.", __func__, message_counter_global, parser[port].message_index, port, message_index);        // %%TEST%% // %%MATRIX%%
     matrix_logger(log_buffer, 4);      // %%TEST%% // %%MATRIX%%
     return return_val;
 }
@@ -618,21 +618,21 @@ uint8_t f_019_message_complete(int message_index, int port, char ch) { // Last c
     //write_crc_buffer(message_index, port, ':'); // Completing CRC buffer.
     //write_crc_buffer(message_index, port, 0); //   Null terminating for printing purposes.
 
-    //P[port].character_index = 0;
-    //P[port].message_index = (P[port].message_index + 1) % MAX_MESSAGE_KEEP;
-    sprintf(log_buffer, "%s:: mgc: %d, Pm_i: %d, p: %d, mi: %d.", __func__, message_counter_global, P[port].message_index, port, message_index);        // %%TEST%% // %%MATRIX%%
+    //parser[port].character_index = 0;
+    //parser[port].message_index = (parser[port].message_index + 1) % MAX_MESSAGE_KEEP;
+    sprintf(log_buffer, "%s:: mgc: %d, Pm_i: %d, p: %d, mi: %d.", __func__, message_counter_global, parser[port].message_index, port, message_index);        // %%TEST%% // %%MATRIX%%
     matrix_logger(log_buffer, 4);      // %%TEST%% // %%MATRIX%%
     r = process_message(message_index, port);
     return_val = message_clear(message_index, port);
-    //P[port].prx_ch = 0; // UGLY!
+    //parser[port].prx_ch = 0; // UGLY!
 //    sprintf(log_buffer, "%s, mgc: %d, crc: <%s>.", __func__, message_counter_global, new_message->CRC_buffer);        // %%TEST%%
 //    logger(log_buffer, 4);        // %%TEST%%
     return return_val;
 }
 
 uint8_t f_x09_writing_into_last_segment(int message_index, int port, char ch) { // Writing into last segment.
-    //P[port].character_index = P[port].character_index + 1;
-//    sprintf(log_buffer, "%s:: mgc: %d, Pm_i: %d, p: %d, mi: %d.", __func__, message_counter_global, P[port].message_index, port, message_index);      // %%TEST%%
+    //parser[port].character_index = parser[port].character_index + 1;
+//    sprintf(log_buffer, "%s:: mgc: %d, Pm_i: %d, p: %d, mi: %d.", __func__, message_counter_global, parser[port].message_index, port, message_index);      // %%TEST%%
 //    logger(log_buffer, 4);        // %%TEST%%
     uint8_t return_val = write_into_segment(message_index, port, ch);
     return return_val;
@@ -678,7 +678,7 @@ uint8_t process_message(int message_index, int port) { // Writing into last segm
          }
 
     }
-    sprintf(log_buffer, "%s:: mgc: %d, Pm_i: %d, p: %d, mi: %d, topic_nr: %d, crc: <%s>.", __func__, message_counter_global, P[port].message_index, port, message_index, topic_nr, new_message->CRC_buffer);        // %%TEST%%
+    sprintf(log_buffer, "%s:: mgc: %d, Pm_i: %d, p: %d, mi: %d, topic_nr: %d, crc: <%s>.", __func__, message_counter_global, parser[port].message_index, port, message_index, topic_nr, new_message->CRC_buffer);        // %%TEST%%
     u2u_logger(log_buffer, 4);      // %%TEST%%
     if (new_message->CRC_check || RESPOND_ON_BAD_CRC){
 
@@ -1147,17 +1147,17 @@ uint8_t uart1_character_processor(char ch){
 uint8_t character_processor(uint8_t port, char ch){
     uint8_t r = 1;
     int m, mo;
-    int message_index = P[port].message_index;
-    P[port].prx_ch = P[port].rx_ch;
-    P[port].rx_ch = ch;
-    P[port].rx_i++;
-    m = ch_mapper[(int) P[port].rx_ch];
-    mo = ch_mapper[(int) P[port].prx_ch];
-    //printf("%c,   %d, %d, %2d,     %2d  --- ", ch,  mo,  m, P[port].segment_index, P[port].character_index);
-    r = P[port].pr_mapper[mo][m][P[port].segment_index](message_index, port,  ch);
-    //sprintf(log_buffer, "(%5d    ---  %2d, %2d)\n", r, P[port].segment_index, P[port].character_index);    //    %%TEST%%
+    int message_index = parser[port].message_index;
+    parser[port].prx_ch = parser[port].rx_ch;
+    parser[port].rx_ch = ch;
+    parser[port].rx_i++;
+    m = ch_mapper[(int) parser[port].rx_ch];
+    mo = ch_mapper[(int) parser[port].prx_ch];
+    //printf("%c,   %d, %d, %2d,     %2d  --- ", ch,  mo,  m, parser[port].segment_index, parser[port].character_index);
+    r = parser[port].pr_mapper[mo][m][parser[port].segment_index](message_index, port,  ch);
+    //sprintf(log_buffer, "(%5d    ---  %2d, %2d)\n", r, parser[port].segment_index, parser[port].character_index);    //    %%TEST%%
     //u2u_logger(log_buffer, 4);    //    %%TEST%%
-    //printf("(%5d    ---  %2d, %2d)\n", r, P[port].segment_index, P[port].character_index);
+    //printf("(%5d    ---  %2d, %2d)\n", r, parser[port].segment_index, parser[port].character_index);
     return 0;
 }
 
@@ -1202,14 +1202,14 @@ uint8_t u2u_self_test(uint8_t port){
 void parser_setup(){
     int i, x, y, z;
     message_counter_global = 0;
-    P[0].rx_i = 0;
-    P[0].segment_index = 0;
-    P[0].character_index = 0;
-    P[0].message_index = 0;
-    P[1].rx_i = 0;
-    P[1].segment_index = 0;
-    P[1].character_index = 0;
-    P[1].message_index = 0;
+    parser[0].rx_i = 0;
+    parser[0].segment_index = 0;
+    parser[0].character_index = 0;
+    parser[0].message_index = 0;
+    parser[1].rx_i = 0;
+    parser[1].segment_index = 0;
+    parser[1].character_index = 0;
+    parser[1].message_index = 0;
     for (i=0; i<255; i++) {
         ch_mapper[i] = 0;
     }
@@ -1218,54 +1218,54 @@ void parser_setup(){
     for (x=0; x<PR_MO; x++) {
         for (y=0; y<PR_M; y++) {
             for (z=0; z<PR_SG; z++) {
-                P[0].pr_mapper[x][y][z] = &f_000_message_clear;
-                P[1].pr_mapper[x][y][z] = &f_000_message_clear;
+                parser[0].pr_mapper[x][y][z] = &f_000_message_clear;
+                parser[1].pr_mapper[x][y][z] = &f_000_message_clear;
             }
         }
     }
 
     for (x=1; x<12; x++) {
-        P[0].pr_mapper[0][0][x] = &f_00x;
-        P[0].pr_mapper[1][0][x] = &f_10x;
-        P[0].pr_mapper[0][1][x] = &f_01x;
-        P[1].pr_mapper[0][0][x] = &f_00x;
-        P[1].pr_mapper[1][0][x] = &f_10x;
-        P[1].pr_mapper[0][1][x] = &f_01x;
-        P[0].pr_mapper[1][1][x] = &f_11x;
-        P[1].pr_mapper[1][1][x] = &f_11x;
+        parser[0].pr_mapper[0][0][x] = &f_00x;
+        parser[0].pr_mapper[1][0][x] = &f_10x;
+        parser[0].pr_mapper[0][1][x] = &f_01x;
+        parser[1].pr_mapper[0][0][x] = &f_00x;
+        parser[1].pr_mapper[1][0][x] = &f_10x;
+        parser[1].pr_mapper[0][1][x] = &f_01x;
+        parser[0].pr_mapper[1][1][x] = &f_11x;
+        parser[1].pr_mapper[1][1][x] = &f_11x;
     }
 
-    P[0].pr_mapper[1][1][0] = &f_110_two_colons;
-    P[1].pr_mapper[1][1][0] = &f_110_two_colons;
-    P[0].pr_mapper[1][1][1] = &f_111_three_colons;
-    P[1].pr_mapper[1][1][1] = &f_111_three_colons;
+    parser[0].pr_mapper[1][1][0] = &f_110_two_colons;
+    parser[1].pr_mapper[1][1][0] = &f_110_two_colons;
+    parser[0].pr_mapper[1][1][1] = &f_111_three_colons;
+    parser[1].pr_mapper[1][1][1] = &f_111_three_colons;
 
-    P[0].pr_mapper[0][1][6] = &f_016;
-    P[1].pr_mapper[0][1][6] = &f_016;
+    parser[0].pr_mapper[0][1][6] = &f_016;
+    parser[1].pr_mapper[0][1][6] = &f_016;
 
-    P[0].pr_mapper[0][0][7] = &f_xx7;
-    P[1].pr_mapper[0][0][7] = &f_xx7;
-    P[0].pr_mapper[0][1][7] = &f_xx7;
-    P[1].pr_mapper[0][1][7] = &f_xx7;
-    P[0].pr_mapper[1][0][7] = &f_xx7;
-    P[1].pr_mapper[1][0][7] = &f_xx7;
-    P[0].pr_mapper[1][1][7] = &f_xx7;
-    P[1].pr_mapper[1][1][7] = &f_xx7;
+    parser[0].pr_mapper[0][0][7] = &f_xx7;
+    parser[1].pr_mapper[0][0][7] = &f_xx7;
+    parser[0].pr_mapper[0][1][7] = &f_xx7;
+    parser[1].pr_mapper[0][1][7] = &f_xx7;
+    parser[0].pr_mapper[1][0][7] = &f_xx7;
+    parser[1].pr_mapper[1][0][7] = &f_xx7;
+    parser[0].pr_mapper[1][1][7] = &f_xx7;
+    parser[1].pr_mapper[1][1][7] = &f_xx7;
 
-    P[0].pr_mapper[0][0][8] = &f_x08_penultimate_segment;
-    P[1].pr_mapper[0][0][8] = &f_x08_penultimate_segment;
-    P[0].pr_mapper[0][1][8] = &f_018_marking_last_segment;
-    P[1].pr_mapper[0][1][8] = &f_018_marking_last_segment;
-    P[0].pr_mapper[1][0][8] = &f_x08_penultimate_segment;
-    P[1].pr_mapper[1][0][8] = &f_x08_penultimate_segment;
+    parser[0].pr_mapper[0][0][8] = &f_x08_penultimate_segment;
+    parser[1].pr_mapper[0][0][8] = &f_x08_penultimate_segment;
+    parser[0].pr_mapper[0][1][8] = &f_018_marking_last_segment;
+    parser[1].pr_mapper[0][1][8] = &f_018_marking_last_segment;
+    parser[0].pr_mapper[1][0][8] = &f_x08_penultimate_segment;
+    parser[1].pr_mapper[1][0][8] = &f_x08_penultimate_segment;
 
-    P[0].pr_mapper[0][0][9] = &f_x09_writing_into_last_segment;
-    P[1].pr_mapper[0][0][9] = &f_x09_writing_into_last_segment;
-    P[0].pr_mapper[1][0][9] = &f_x09_writing_into_last_segment;
-    P[1].pr_mapper[1][0][9] = &f_x09_writing_into_last_segment;
+    parser[0].pr_mapper[0][0][9] = &f_x09_writing_into_last_segment;
+    parser[1].pr_mapper[0][0][9] = &f_x09_writing_into_last_segment;
+    parser[0].pr_mapper[1][0][9] = &f_x09_writing_into_last_segment;
+    parser[1].pr_mapper[1][0][9] = &f_x09_writing_into_last_segment;
 
-    P[0].pr_mapper[0][1][9] = &f_019_message_complete;
-    P[1].pr_mapper[0][1][9] = &f_019_message_complete;
+    parser[0].pr_mapper[0][1][9] = &f_019_message_complete;
+    parser[1].pr_mapper[0][1][9] = &f_019_message_complete;
 }
 
 uint8_t u2u_message_setup(){
