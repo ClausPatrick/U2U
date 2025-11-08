@@ -1,79 +1,100 @@
-# UART to UART messaging
+# U2U (UART-to-UART) Messaging Network Library
 
-## Introduction
+## Overview
 
-A library to manage messages on a simple network containing various embedded systems containing RP2040 (PICO) and Raspberry Pi's. Messages contain various fields with the intention to utilise features present on other boards. They can be unicast (using a unique NAME) or broadcast and are filtered on TOPIC, and provided specific hardware is in use on the network, topic specific responses are generated. Messages are being forwarded if broadcast or if NAME does not correspond to the receiving device. Since the RP2040 has two UART, the network is basically a daisy chain of uart0 to uart1 connections (equivalent to a double linked list).
+U2U is a lightweight messaging library designed for creating a flexible, embedded system network using UART communication across various hardware platforms including RP2040 (PICO), Raspberry Pi, and ESP32 devices.
 
-Hardware-wise I decided to use straight through cabling and crossover the connections on uart0 on the PCB itself. The main.cxx file should contain the initalisation of the messaging protocol and should check if get_message() does not return NULL. Non-NULL returns point to struct containing elements that were received from the messages as well as calculated values.
+## Key Features
 
-User settings in u2uclientprofile.* set up the unit’s unique profile and topic that are supposed to be responded to. Pin definitions pertaining to the UARTs as well as supported functions and their response strings are defined in u2uclientdef.c and obviously vary across the different boards.
+- **Flexible Network Topology**: Supports daisy-chained UART connections resembling a linked list
+- **Topic-Oriented Messaging**: Messages filtered by topics with configurable responses
+- **Multi-Platform Support**: Works across RP2040, Raspberry Pi, and ESP32
+- **Robust Message Handling**:
+  - Unicast and broadcast messaging
+  - Message forwarding
+  - CRC validation
+  - Configurable response behaviors
 
-The Linux driver uses websockets to extend the network, adding wireless capabilities but this also changes the network’s topology. The IP address for each unit is set in u2uclientdef.c.
+## Message Structure
 
-Message
-
-Running topic oriented messaging service is not trivial and the purpose is to implement this without too much overhead in the users main program. Certain hardware implementations allow for data transfers (reading out sensor information, reading in display information) but in a way that doesn't require the main program to handle the transmission services. Each unit can have 1 or 2 UART interfaces so boards are interconnected either via their single interface or daisy chained through via both interfaces. In the case of two interfaces, one will be designated IN and the other OUT. This allow for a network topology that resembles a linked list data structure (graph topology with one vertrex per node) whereas the single interface boards terminate the network but act as a bridge to extend it wireless.
-
-Each message contains several segments, bound by the designator ':'. As the payload-length is variable one segment is dedicated to indicate the length of the payload and has a maximum length enforced by const int MAX_PAYLOAD_LENGTH.
-
-Here is a message outlined:
+Each message follows this format:
 
 ::SENDER:RECEIVER:R-FLAG:TOPIC:CHAPTER:LENGTH:PAYLOAD:HOPCOUNT:CRC:
 
-A message start is indicated by a double colon '::'. This has two functions: it allows syncing of start messages and recognise if a faulty message is received. In many cases if the sender messed up several segments are rendered empty and the receiver will wait for a correct start. Values for SENDER and RECEIVER are designated strings the user sets for each board. In order to send messages to all units receiver name GEN (for general) can be used.
 
-R-Flags
+### Message Segments Explained
 
-This determines the response behaviour:
+| Segment | Description |
+|---------|-------------|
+| SENDER | Unique identifier for the sending device |
+| RECEIVER | Destination device (or 'GEN' for broadcast) |
+| R-FLAG | Response behavior type |
+| TOPIC | Message category/type |
+| CHAPTER | Message sequence (0-9) |
+| LENGTH | Payload character count |
+| PAYLOAD | Actual message data |
+| HOPCOUNT | Number of device hops |
+| CRC | Cyclic Redundancy Check |
 
-RQ: request - sender requests response.
+### R-Flag Types
 
-RS: response - sender is responding to a request.
+- `RQ`: Request response
+- `RS`: Responding to a request
+- `RI`: Ignore (forward if not direct recipient)
+- `RN`: Not acknowledged (CRC mismatch)
 
-RI: ignore - no response is required but message will be forwarded if the receiver is not named in RECEIVER.
+## Project Structure
 
-RN: not acknowledged - receiver calculated a different CRC value than was indicated in CRC segment but receiver will respond to message even if it is not addressed in RECEIVER. This ensures the sender is made aware of the error without network overhead.
+- `u2u.h` / `u2u.c`: Core messaging protocol implementation
+- `u2uclientdef.h`: Device-specific configuration
+- `u2uclientdef.c`: Network configuration (IP addresses for Linux)
+- `u2u_HAL**.c` / `u2u_HAL**.h`: Hardware abstraction layer
 
-Other message segments
+## Hardware Configuration
 
-TOPIC fields are preset in u2uclientdef.h and can be overwritten via exposed function u2u_topic_exchange() to allow for a custom response.
+- Supports devices with 1-2 UART interfaces
+- Uses straight-through cabling with crossover on uart0
+- Single-interface boards can terminate or bridge the network
 
-CHAPTER is analogue to sequences in TCP and indicates order. This will be ascii values {0-9}.
+## Wireless Extension
 
-(payload)LENGTH is indicating the character count of the PAYLOAD. This will be ascii values {0-9}.
+- Linux driver supports WebSocket for wireless capabilities
+- Changes network topology from wired to mixed
 
-PAYLOAD is the data to be sent. Beside the MAX_PAYLOAD_LENGTH there is no limitation on the length or the character it contains, even (double)colons.
+## Current Limitations
 
-HOPCOUNT keeps track of how many units have forwarded the message. Each forwarding will increment this value. This will be ascii values {0-9}. CRC for crc value. This will be ascii values {0-9}.
+- No dynamic ARP-like IP address discovery
+- Character-based string comparisons (future: hash-table)
 
-u2u.h / u2u.c
+## Roadmap
 
-There are two main tasks that are executed to handle inbound and outbound messages. Inbound: Messages are being parsed on character basis and written into the correct field. Once completed and verified it will then be routed. Depending on the message content it can be forwarded or responded to. Outbound: struct Message can be filled in with values in order to send this message over the lines.
+- [x] Null-character independent functions
+- [x] Hashing for topic/sender comparisons
+- [x] Port extensions to 3 to accomodate ESP32 (two UARTs and wifi)
+- [ ] Bluetooth bridging support
 
-u2uclientdef.h
+## Getting Started
 
-User specific profile such as SENDER name and strings for responses as well as pin settings for UART.
+1. Configure `u2uclientdef.h` with your device settings
+2. Initialize messaging protocol in `main.cxx`
+3. Use `get_message()` to receive and process messages
+4. Implement topic-specific responses as needed
 
-u2uclientdef.c
+## Example Usage
 
-For Linux devices, IP address lists of the network are listed here. There is no equivalent to ARP as of now that would allow the network to learn of its peer IP addresses.
+```c
+// Basic message sending
+struct Message msg;
+msg.sender = "DEVICE1";
+msg.receiver = "GEN";
+msg.r_flag = "RQ";
+msg.topic = "SENSOR";
+msg.payload = "TEMPERATURE_REQUEST";
+send_message(&msg);
 
-u2u_HAL**.c u2u_HAL**.h Hardware implementation. If interrupt routines are used, they are defined and implemented here. For the Linux versions however phtreads are setup to listen / monitor both the serial port as well as the socket that has been bound to port / IP address.
-
-Features -The used topology does not allow for message collisions on the UART wiring and the sockets are run via phtreads where processes are forked for each new connection to handle multiple connections seamlessly.
-
--Payload can contain any characters within a predetermined length, including NULL and line returns, etc. Although the segmentation character ‘:’ is used through the message to allow for dynamic parsing the character itself is ignored within the payload.
-
--the message parsing will reset if messages are not started with a ‘::’ (double colon) or if the R-flag field does not have ‘R’ as first character.
-
--CRC values are checked but the response behaviour is determined by user in u2uclientdef.h whether the get_message() allows for failed CRC messages to be passed on.
-
--for now, all segments are character compared by cmp_str(), but later versions shall implement a hash-table.
-
-To do
-
-[DONE]-Although string determination (NULL-character) has been added thorough the entirety of a message various function shall be made NULL-character independent. Since the length of each segment is known at each stage this feasible. These functions, not depending on the NULL, will be affixed with ‘_i()’.
-
-[DONE]-Hashing function for topic / sender comparisons.
-
--Bluetooth bridging.
+// Message processing
+struct Message* received = get_message();
+if (received != NULL) {
+    // Process received message
+    process_message(received);
+}
