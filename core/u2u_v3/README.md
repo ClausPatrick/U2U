@@ -1,6 +1,7 @@
 # U2U core functions
 
 ## Core files
+```
 src
 ├── c_logger.c          Non essential
 ├── c_logger.h          Non essential
@@ -21,7 +22,7 @@ src
 ├── u2u_HAL_lx.h        Non functional
 ├── u2u_HAL_pico.c      Non functional
 └── u2u_HAL_pico.h      Non functional
-
+```
 Files flagged as 'Non functional' are for compatiblity reasons. The compilation process should run the same as when those actually are functional.
 Files flagged as 'Non essential' are helper files (logging) and are not part of the core functionality of the ultimate compilation.
 
