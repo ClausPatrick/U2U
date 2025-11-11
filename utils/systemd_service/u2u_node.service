@@ -1,0 +1,10 @@
+[Unit]
+Description=Run u2u_HAL_lx
+
+[Service]
+ExecStart=/home/$USER/u2u/hal/linux/u2u_HAL_lx
+User=$USER
+WorkingDirectory=/home/$USER/u2u/hal/linux/
+
+[Install]
+WantedBy=multi-user.target
