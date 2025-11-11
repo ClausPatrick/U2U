@@ -42,12 +42,12 @@ int set_port(int port, bool dir, bool state);
 // port: 0 (UART0) or 1 (UART1)
 // dir: 0 (inbound), 1 (outbound)
 // state: true (enable), false (disable)
-
+```
 ### Peer Management
 
-    Supports multiple peer IP addresses
-    Configurable peer list
-    IP address comparison utilities
+-Supports multiple peer IP addresses
+-Configurable peer list
+-IP address comparison utilities
 
 ## Communication Functions
 
