@@ -45,52 +45,52 @@ int set_port(int port, bool dir, bool state);
 ```
 ### Peer Management
 
--Supports multiple peer IP addresses
--Configurable peer list
--IP address comparison utilities
+- Supports multiple peer IP addresses
+- Configurable peer list
+- IP address comparison utilities
 
 ## Communication Functions
 
 Function	Description
--write_from_uart0()	Write to serial port
--write_from_uart1()	Broadcast to socket peers
--write_from_uart()	Write to both interfaces
+- write_from_uart0()	Write to serial port
+- write_from_uart1()	Broadcast to socket peers
+- write_from_uart()	Write to both interfaces
 
 ## Error Handling
 
--Mutex-based thread synchronization
--Error logging
--Graceful thread termination
+- Mutex-based thread synchronization
+- Error logging
+- Graceful thread termination
 
 ## Logging
 
 ## Supports communication logging with detailed flags:
 
--Port identification
--Communication direction
--Message origin
--Message type
+- Port identification
+- Communication direction
+- Message origin
+- Message type
 
 ## Limitations
 
--Fixed number of peers
--No dynamic peer discovery
--Requires manual IP configuration
+- Fixed number of peers
+- No dynamic peer discovery
+- Requires manual IP configuration
 
 ## Build Requirements
 
--Linux environment
--POSIX threads (pthread)
--Standard system libraries
--GCC compiler
+- Linux environment
+- POSIX threads (pthread)
+- Standard system libraries
+- GCC compiler
 
 
 ## Roadmap
 
--Dynamic peer discovery
--Enhanced error handling
--More robust logging mechanism
--IPv6 support
+- Dynamic peer discovery
+- Enhanced error handling
+- More robust logging mechanism
+- IPv6 support
 
 ## Contributing
 
