@@ -53,13 +53,14 @@ class Target(): # Target refers to u2u_HAL_lx
 
     def pipe_command(self, command):
         logger.info(f'Piping send command from {self.Self_Name}-target: "{command}"')
-        with open(self.hal_pipe_out, 'w') as pipe:
-            cmd = "-c" + command + "\n"
+        with open(self.hal_pipe_out, 'wb') as pipe:
+            cmd = b"-c" + command.encode() + b"\n"
             pipe.write(cmd)
             logger.info(f"Piped command: '{cmd}'")
-        with open(self.hal_pipe_in, 'r') as pipe:
+        with open(self.hal_pipe_in, 'rb') as pipe:
             while True:
-                pipe_data = pipe.read()
+                pipe_data_bytes = pipe.read()
+                pipe_data = pipe_data_bytes.rstrip(b'\0').decode()
                 if len(pipe_data) == 0:
                     break
                 if pipe_data[0]=='0' or pipe_data[0]==0:
@@ -324,8 +325,10 @@ class Target(): # Target refers to u2u_HAL_lx
         data = None
         if (os.path.exists(self.hal_pipe_in)):
             try:
-                with open(self.hal_pipe_in, "r") as pipe:
-                    data = pipe.read()
+                with open(self.hal_pipe_in, "rb") as pipe:
+                    #data = pipe.read()
+                    pipe_data_bytes = pipe.read()
+                    data = pipe_data_bytes.rstrip(b'\0').decode()
                 logger.info(f'Pipe data read: "{data}".')
             except FileNotFoundError:
                 logger.warning(f'Named pipe at {self.hal_pipe_in} not found. Creating pipe now.')
@@ -338,8 +341,8 @@ class Target(): # Target refers to u2u_HAL_lx
     def write_to_ta(self, data):
         if (os.path.exists(self.hal_pipe_in)):
             try:
-                with open(self.hal_pipe_out, "w") as pipe:
-                    pipe.write(data + "\n")
+                with open(self.hal_pipe_out, "wb") as pipe:
+                    pipe.write(data.encode() + b"\n")
                 logger.info(f'Pipe data write: "{data}"')
             except FileNotFoundError:
                 logger.warning(f'Named pipe at {self.hal_pipe_out} not found. Creating pipe now.')
