@@ -1,0 +1,4 @@
+numpy==2.3.5
+prompt_toolkit==3.0.52
+RPi.GPIO==0.7.1
+wcwidth==0.2.14
