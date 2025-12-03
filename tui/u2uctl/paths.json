@@ -1,0 +1,10 @@
+{
+    "paths":{
+        "log_dir": "/path/to/u2u/hal/linux/logs",
+        "db_path": "/path/to/u2u/utils/archive/central_comm.db",
+        "topology": "/path/to/u2u/tui/topology_",
+        "hal_pipe_out": "/path/to/u2u/hal/linux/PTOC_PIPE",
+        "hal_pipe_in":  "/path/to/u2u/hal/linux/CTOP_PIPE"
+    }
+}
+
