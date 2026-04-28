@@ -1,100 +1,304 @@
-# U2U (UART-to-UART) Messaging Network Library
+# UART-to-UART Messaging Protocol (U2U) - Version 5
+
+A lightweight messaging protocol designed for embedded systems communicating over UART and extended to wireless-capable devices. The protocol supports structured messages, deterministic routing, and platform-independent parsing.
+
+---
+
+## Supported Platforms
+
+- Raspberry Pi (Linux-based SBC)
+- Raspberry Pi RP2040 (Pico)
+- Espressif ESP32
+
+---
 
 ## Overview
 
-U2U is a lightweight messaging library designed for creating a flexible, embedded system network using UART communication across various hardware platforms including RP2040 (PICO), Raspberry Pi, and ESP32 devices.
+Originally designed for **UART daisy-chained networks**, the protocol has been extended to support **wireless communication** (ESP32 / Raspberry Pi).
 
-## Key Features
+Each node:
+- Is connected to 2 (or 3 for ESP32) peers
+- Parses incoming messages
+- Decides to **respond**, **forward**, or **drop** messages based on routing rules
 
-- **Flexible Network Topology**: Supports daisy-chained UART connections resembling a linked list
-- **Topic-Oriented Messaging**: Messages filtered by topics with configurable responses
-- **Multi-Platform Support**: Works across RP2040, Raspberry Pi, and ESP32
-- **Robust Message Handling**:
-  - Unicast and broadcast messaging
-  - Message forwarding
-  - CRC validation
-  - Configurable response behaviors
+Messages carry metadata describing:
+- Sender
+- Receiver
+- Routing intent (R-Flag)
 
-## Message Structure
+---
 
-Each message follows this format:
+## Physical Layer
 
-::SENDER:RECEIVER:R-FLAG:TOPIC:CHAPTER:LENGTH:PAYLOAD:HOPCOUNT:CRC:
+- UART-based daisy-chain topology
+- Optional wireless extension
+- Each node acts as both:
+  - Receiver
+  - Router
+  - (Optional) responder
 
+---
 
-### Message Segments Explained
+## Data Layer
 
-| Segment | Description |
-|---------|-------------|
-| SENDER | Unique identifier for the sending device |
-| RECEIVER | Destination device (or 'GEN' for broadcast) |
-| R-FLAG | Response behavior type |
-| TOPIC | Message category/type |
-| CHAPTER | Message sequence (0-9) |
-| LENGTH | Payload character count |
-| PAYLOAD | Actual message data |
-| HOPCOUNT | Number of device hops |
-| CRC | Cyclic Redundancy Check |
+### Message Structure
 
-### R-Flag Types
+A message is enclosed by colons:
+:0071S11R13F2T8C2P6H1Y3MNODE_SENDERNODE_RECEIVERRSGET_TEMP12Zone 40089:
+### Format Breakdown
 
-- `RQ`: Request response
-- `RS`: Responding to a request
-- `RI`: Ignore (forward if not direct recipient)
-- `RN`: Not acknowledged (CRC mismatch)
+| Component | Description |
+|----------|-------------|
+| `:` | Start delimiter |
+| `0071` | Total message length |
+| `S11` | Sender (length 11) |
+| `R13` | Receiver (length 13) |
+| `F2` | R-Flag |
+| `T8` | Topic |
+| `C2` | Chapter |
+| `P6` | Payload |
+| `H1` | Hops |
+| `Y3` | CRC |
+| `M` | Start of message body |
 
-## Project Structure
+---
 
-- `u2u.h` / `u2u.c`: Core messaging protocol implementation
-- `u2uclientdef.h`: Device-specific configuration
-- `u2uclientdef.c`: Network configuration (IP addresses for Linux)
-- `u2u_HAL**.c` / `u2u_HAL**.h`: Hardware abstraction layer
+## Message Segments
 
-## Hardware Configuration
+| Flag | Segment   | Description                      | Optional |
+|------|----------|----------------------------------|----------|
+| S    | Sender   | Origin node                      | No       |
+| R    | Receiver | Target node or `GEN` (broadcast) | No       |
+| F    | R-Flag   | Routing behaviour                | No       |
+| T    | Topic    | Command / request identifier     | Yes      |
+| C    | Chapter  | Sequence grouping                | Yes      |
+| P    | Payload  | Message data                     | No       |
+| H    | Hops     | Forward counter                  | Yes      |
+| Y    | CRC      | Integrity check                  | No       |
 
-- Supports devices with 1-2 UART interfaces
-- Uses straight-through cabling with crossover on uart0
-- Single-interface boards can terminate or bridge the network
+---
 
-## Wireless Extension
+## Segment Details
 
-- Linux driver supports WebSocket for wireless capabilities
-- Changes network topology from wired to mixed
+### Sender
+- Unique node identifier  
+- Max length: `16`
 
-## Current Limitations
+### Receiver
+- Specific node name or `GEN` (broadcast)
 
-- No dynamic ARP-like IP address discovery
-- Character-based string comparisons (future: hash-table)
+### R-Flag
 
-## Roadmap
+| Value | Meaning                  |
+|------|--------------------------|
+| RQ   | Response requested       |
+| RS   | Response                 |
+| RI   | No response required     |
+| RN   | Fault / invalid message  |
 
-- [x] Null-character independent functions
-- [x] Hashing for topic/sender comparisons
-- [x] Port extensions to 3 to accomodate ESP32 (two UARTs and wifi)
-- [ ] Bluetooth bridging support
+---
 
-## Getting Started
+### Topic
+- Fixed-length (8 chars)
+- Used for routing logic via hashing
+- Defines request/response semantics
 
-1. Configure `u2uclientdef.h` with your device settings
-2. Initialize messaging protocol in `main.cxx`
-3. Use `get_message()` to receive and process messages
-4. Implement topic-specific responses as needed
+---
 
-## Example Usage
+### Chapter
+- Up to 3 characters
+- Used for sequencing multi-part messages
+
+---
+
+### Payload
+- Variable size
+- Contains application data
+
+---
+
+### Hops
+- Incremented on each forward/response
+- Used for topology inference and loop detection
+
+---
+
+### CRC
+- 3-digit zero-padded value
+- Calculated over message (excluding crc and final colon)
+- Ensures message integrity
+
+---
+
+## Protocol Properties
+
+- Self-describing message structure
+- Flexible segment ordering (based on preamble)
+- Optional segments supported
+- Custom segments can be added if uniquely flagged
+- No dynamic memory allocation required
+
+---
+
+## Routing Behaviour
+
+Each node evaluates incoming messages and chooses one action:
+
+### Respond
+Conditions:
+- Receiver is `SELF` or `GEN`
+- R-Flag = `RQ`
+
+Result:
+- Swap sender/receiver
+- Set R-Flag = `RS`
+
+---
+
+### Forward
+Conditions:
+- Receiver ≠ SELF
+- R-Flag ∈ {RQ, RI, RS, RN}
+
+Special case:
+- `GEN` messages are always forwarded
+
+---
+
+### Drop
+Conditions include:
+- Receiver = SELF and R-Flag = `RI`
+- Invalid routing combinations
+
+Illegal cases:
+- Sender == Receiver (possible loop)
+- `GEN` + `RS` (responses must not broadcast)
+- `GEN` + `RN` (fault messages must not broadcast)
+
+---
+
+## Routing Summary
+
+| Action | Receiver | R-Flag |
+|--------|----------|--------|
+| RESP   | GEN      | RQ     |
+| RESP   | SELF     | RQ     |
+| FORW   | GEN      | RQ     |
+| FORW   | GEN      | RI     |
+| FORW   | OTH      | RQ     |
+| FORW   | OTH      | RI     |
+| FORW   | OTH      | RS     |
+| FORW   | OTH      | RN     |
+| DROP   | SELF     | RI     |
+| DROP   | GEN      | RS     |
+| DROP   | SELF     | RS     |
+| DROP   | GEN      | RN     |
+| DROP   | SELF     | RN     |
+
+---
+
+## Code Structure
+
+### Core
+- `u2u.c`
+- `u2u.h`
+
+Responsibilities:
+- Message parsing
+- Routing logic
+- Queue management
+
+---
+
+### Hardware Abstraction Layers (HAL)
+
+| Platform | Module |
+|----------|--------|
+| Linux SBC | `u2u_HAL_lx` |
+| RP2040 | `u2u_HAL_pico` |
+| ESP32 | `u2u_HAL_esp` |
+
+---
+
+## API Overview
+
+### Data Structures
+
+- `struct Message`
+- `struct Message_Segments`
+
+Design:
+- Messages stored in stack-based queues
+- No dynamic allocation
+- Segment struct provides direct access to parsed fields
+
+---
+
+### Receiving Messages
+
+- Messages stored in **per-port cyclic queues**
+- Avoids race conditions
+
+Function:
+Message* get_message(Message_Segments* seg);
+Returns:
+- Pointer to message
+- `NULL` if queue empty
+
+---
+
+### Sending Messages
+
+#### Method 1: Structured API
+format_message()
+u2u_send_message()
+
+Supports:
+- String topics
+- Integer-based topics (`topic_int`)
+
+---
+
+#### Method 2: Pipe Composer
+pipe_message_composer(
+"69 {SRFTCPH} {TEST_SNDR} {TEST_RCVR} {RI} {GET_ENCR} {0} {tzns} {309}"
+);
+
+Format:
+
+| Segment | Meaning |
+|--------|--------|
+| `{SRFTCPH}` | Preamble |
+| `{TEST_SNDR}` | Sender |
+| `{TEST_RCVR}` | Receiver |
+| `{RI}` | R-Flag |
+| `{GET_ENCR}` | Topic |
+| `{0}` | Chapter |
+| `{tzns}` | Payload |
+| `{309}` | Hops |
+
+Notes:
+- Sender and Hops can be auto-filled
+- `{}` currently used as delimiters (limitation for payload)
+
+---
+
+## Error Handling
+
+Errors are reported via an enum:
 
 ```c
-// Basic message sending
-struct Message msg;
-msg.sender = "DEVICE1";
-msg.receiver = "GEN";
-msg.r_flag = "RQ";
-msg.topic = "SENSOR";
-msg.payload = "TEMPERATURE_REQUEST";
-send_message(&msg);
+CRC_HAN_ERR = 1   // CRC mismatch
+LEN_HAN_ERR = 2   // Length mismatch
+RFL_HAN_ERR = 4   // Invalid R-flag prefix
+RFS_HAN_ERR = 8   // Invalid R-flag value
+GRS_ROU_ERR = 16  // GEN + RS invalid
+GSC_ROU_ERR = 32  // Self-loop detected
+GRN_ROU_ERR = 64  // Invalid R-flag
+```
 
-// Message processing
-struct Message* received = get_message();
-if (received != NULL) {
-    // Process received message
-    process_message(received);
-}
+## Design Notes
+Fully deterministic routing
+No heap usage → predictable embedded behaviour
+Extendable segment system
+Designed for constrained environments
