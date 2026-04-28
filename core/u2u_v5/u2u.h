@@ -1,4 +1,3 @@
-/* Origin: deepspace9, /home/pi/c_taal/u2u/core/u2u_v5/src/u2u.h - updated: 2026/04/28 15:36:20. */ 
 //u2u.h
 #ifndef U2U_H
 #define U2U_H
@@ -33,9 +32,6 @@
 #endif 
 
 #define PORT_COUNT 3
-
-
-
 
 #define GENERAL_NAME "GEN"
 
