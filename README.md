@@ -220,6 +220,23 @@ Responsibilities:
 
 ---
 
+### Node profiles
+- `u2u_client_profile.c`
+- `u2u_client_profile.h`
+
+Responsibilities:
+Setting constant definitions that are specific to the node such as:
+- `U2U_PLATFORM_CHANNELS`
+Used to indicate the port capabilities (Linux: 1, PICO: 2, ESP32: 3).
+- `SELF_NAME`
+Sets the Node's name.
+- `topic_default_responses`
+Array of character arrays used to set the payload as a response to a specific topic.
+- `UART_{R/T}X_{0/1/2}`
+Defines the hardware pin (0, 1, or 2) to set the UART as (R)eceiver or (T)ransmit.
+
+---
+
 ## API Overview
 
 ### Data Structures
