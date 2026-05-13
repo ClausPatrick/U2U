@@ -44,7 +44,7 @@ Messages carry metadata describing:
 ### Message Structure
 
 A message is enclosed by colons:
-:0071S11R13F2T8C2P6H1Y3MNODE_SENDERNODE_RECEIVERRSGET_TEMP12Zone 40089:
+```:0071S11R13F2T8C2P6H1Y3MNODE_SENDERNODE_RECEIVERRSGET_TEMP12Zone 40089:```
 ### Format Breakdown
 
 | Component | Description |
@@ -142,7 +142,7 @@ A message is enclosed by colons:
 
 ## Routing Behaviour
 
-Each node evaluates incoming messages and chooses one action:
+Each node evaluates incoming messages and chooses an action. In the case of GEN calls (broadcasts), Respond and Forward are issued:
 
 ### Respond
 Conditions:
@@ -243,6 +243,7 @@ Defines the hardware pin (0, 1, or 2) to set the UART as (R)eceiver or (T)ransmi
 
 - `struct Message`
 - `struct Message_Segments`
+- `struct U2U_Errors`
 
 Design:
 - Messages stored in stack-based queues
@@ -302,7 +303,7 @@ Notes:
 
 ## Error Handling
 
-Errors are reported via an enum:
+Errors per message are reported via an enum:
 
 ```c
 CRC_HAN_ERR = 1   // CRC mismatch
@@ -313,6 +314,9 @@ GRS_ROU_ERR = 16  // GEN + RS invalid
 GSC_ROU_ERR = 32  // Self-loop detected
 GRN_ROU_ERR = 64  // Invalid R-flag
 ```
+
+Errors in general are tallied in `U2U_Errors` struct where each member is indexed per port. Function `get_u2u_errors()` will outline all occurred errors and 
+write it in a buffer for reference. 
 
 ## Design Notes
 Fully deterministic routing
