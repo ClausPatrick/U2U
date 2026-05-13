@@ -1,10 +1,14 @@
 [Unit]
-Description=Run u2u_HAL_lx
+Description=u2u_node
+After=network.target
 
 [Service]
-ExecStart=/home/$USER/u2u/hal/linux/u2u_HAL_lx
-User=$USER
-WorkingDirectory=/home/$USER/u2u/hal/linux/
+Type=simple
+User=USER
+WorkingDirectory=/usr/local/bin
+ExecStart=/usr/local/bin/u2u_node
+Restart=no
 
 [Install]
 WantedBy=multi-user.target
+
