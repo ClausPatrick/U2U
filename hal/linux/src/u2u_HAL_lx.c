@@ -5,6 +5,537 @@
 
 const char* comm_log_file_location = "/home/pi/c_taal/u2u/hal/linux/logs"; // Todo:  check path via pwd and ammend
 
+atomic_int  keep_serial_running         = 0;
+atomic_int  keep_socket_running = 0;
+static volatile int is_serial_running           = 0;
+static volatile int is_socket_running           = 0;
+
+volatile sig_atomic_t keep_running              = 1;
+
+int epoll_fd;
+int wake_fd;
+
+static int serial_port;
+static int socket_port;
+static int server_fd;
+
+char peer_ip_list[PEER_COUNT][20];
+char peer_name_list[PEER_COUNT][32];
+int peer_count;
+
+int transfer_counter[2][3];
+
+pthread_t thread_id_serial_read;
+pthread_t thread_id_socket_read;
+
+//SELF_IP_ADDRESS, PEER_IP_LIST, PEER_NAME_LIST, PEER_COUNT.
+
+struct U2U_Options{
+    bool port_enable[2][2];
+    bool non_support_topic_response;
+};
+
+struct U2U_Options options;
+
+bool uart_is_readable(int port){
+    (void) port;
+    int r = 0;
+    return r;
+}
+
+static char log_buffer[1024];
+static char log_buffer_thread_1[1024];
+static char log_buffer_thread_2[1024];
+
+
+void uart0_irq_routine(void){ }
+void uart1_irq_routine(void){ }
+
+
+uint8_t write_from_uart0(char* buffer, size_t buffer_length){
+    if (options.port_enable[0][1]==1){
+        write(serial_port, buffer, buffer_length);
+        transfer_counter[0][1]++;
+    }
+    return 0;
+}
+
+
+int write_from_socket(char* ip, char* buffer, int buffer_length){
+    if (options.port_enable[1][1]==1){
+        int sockfd, n;
+        struct sockaddr_in serv_addr;
+        struct hostent *server;
+        int ret_val = 0;
+        sockfd = socket(AF_INET, SOCK_STREAM, 0);
+        if (sockfd < 0) {
+            ret_val += 1;
+            return ret_val;
+        }
+        server = gethostbyname(ip);
+        if (server == NULL) {
+            fprintf(stderr,"ERROR, no such host\n");
+            sprintf(log_buffer, "HAL: %s:: host error.", __func__);
+            hal_logger(log_buffer, 2);
+            ret_val += 2;
+            return ret_val;
+        }
+        bzero((char *) &serv_addr, sizeof(serv_addr));
+        serv_addr.sin_family = AF_INET;
+        bcopy((char *)server->h_addr, (char *)&serv_addr.sin_addr.s_addr, server->h_length);
+        serv_addr.sin_port = htons(PORT);
+        if (connect(sockfd,(struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+            ret_val += 4;
+            if (transfer_counter[1][2]%32 == 0){
+                sprintf(log_buffer, "HAL: %s:: Connection error: %s.", __func__, ip);
+                hal_logger(log_buffer, 2);
+            }
+            transfer_counter[1][2]++;
+            return ret_val;
+        }
+
+        n = write(sockfd, buffer, buffer_length);
+        if (n != buffer_length){
+            sprintf(log_buffer, "HAL: %s:: Not all bytes written!", __func__);
+            hal_logger(log_buffer, 3);
+        }
+    
+        if (n < 0) {
+            transfer_counter[1][2]++;
+            sprintf(log_buffer, "HAL: %s:: writing error.", __func__);
+            hal_logger(log_buffer, 2);
+            ret_val += 8;
+            return ret_val;
+        }
+
+        close(sockfd);
+        transfer_counter[1][1]++;
+        return ret_val;
+    }
+    return 0;
+}
+
+
+
+/* Communication over uart1 is effectivly communicating via sockets to peers */
+uint8_t write_from_uart1(char* buffer, size_t buffer_length){
+    int ret_val, i;
+    for (i=0; i<peer_count; i++){
+        ret_val += write_from_socket(peer_ip_list[i], buffer, buffer_length);
+    }
+    return ret_val;
+}
+
+
+uint8_t write_from_uart2(char* buffer, size_t buffer_length){
+    (void) buffer;
+    (void) buffer_length;
+    return 1;
+}
+
+#define MAX_EVENTS 16
+
+void* socket_in_task(void* _){
+    (void) _;
+    struct sockaddr_in address;
+    int opt = 1;
+    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        perror("socket failed");
+        exit(EXIT_FAILURE);
+    }
+    int flags = fcntl(server_fd, F_GETFL, 0);
+    fcntl(server_fd, F_SETFL, flags | O_NONBLOCK);
+    sprintf(log_buffer_thread_2, "THREAD: %s:: Socket opened @fd:%d.", __func__, server_fd);
+    thread2_logger(log_buffer_thread_2, 4);
+
+    // Forcefully attaching socket to the port 8080
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt))) {
+        perror("setsockopt");
+        exit(EXIT_FAILURE);
+    }
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons(PORT);
+    sprintf(log_buffer_thread_2, "THREAD: %s:: Socket address configuration for port %d.", __func__, PORT);
+    thread2_logger(log_buffer_thread_2, 4);
+
+    // Forcefully attaching socket to the port 8080
+    if (bind(server_fd, (struct sockaddr*)&address, sizeof(address)) < 0) {
+        perror("bind failed");
+        exit(EXIT_FAILURE);
+    }
+
+    
+    if (listen(server_fd, 1) < 0) {
+        perror("listen");
+        exit(EXIT_FAILURE);
+    }
+    sprintf(log_buffer_thread_2, 
+            "THREAD: %s:: Socket set to listening state. Entering main task loop.", __func__);
+    thread2_logger(log_buffer_thread_2, 4);
+
+    epoll_fd = epoll_create1(0);
+    if (epoll_fd == -1){
+        perror("epoll_create1 failed");
+    }
+    struct epoll_event ev;
+    struct epoll_event events[MAX_EVENTS];
+
+    ev.events = EPOLLIN;
+    ev.data.fd = server_fd;
+
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, server_fd, &ev) == -1){
+        perror("epoll_ctl: server_fd");
+        sprintf(log_buffer_thread_2, "%s:: epoll call failure.", __func__);
+        thread2_logger(log_buffer_thread_2, 2);
+    }
+    ev.events = EPOLLIN;
+    ev.data.fd = wake_fd;
+    
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, wake_fd, &ev) == -1){
+        perror("epoll_ctl: wake_fd");
+        sprintf(log_buffer_thread_2, "%s:: epoll call failure.", __func__);
+        thread2_logger(log_buffer_thread_2, 2);
+    }
+    sprintf(log_buffer_thread_2, "%s:: Starting server loop.", __func__);
+    thread2_logger(log_buffer_thread_2, 4);
+
+    while (keep_socket_running) {    // Main loop to keep server running.
+        int n_ready = epoll_wait(epoll_fd, events, MAX_EVENTS, -1);
+        if (n_ready < 0){ 
+            if (keep_socket_running==0){ 
+                break;
+            }
+            continue;
+        }
+
+        for (int i = 0; i < n_ready; i++) { // Looping over all fd's that are ready.
+            int fd = events[i].data.fd;
+            if (fd == wake_fd){
+                uint64_t val;
+                read(wake_fd, &val, sizeof(val));
+                break;
+            }
+
+            if (events[i].events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
+                close(fd);
+                epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
+                continue;
+            }
+
+            if (fd == server_fd) {  // New connection.
+
+                while (1) {
+                    int client_fd = accept(server_fd, (struct sockaddr*) NULL, NULL);
+                    if (client_fd < 0) {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                            break;
+                        }else{
+                            thread2_logger(log_buffer_thread_2, 2);
+                            break;
+                        }
+                    }
+                    int flags = fcntl(client_fd, F_GETFL, 0);
+                    fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
+
+                    ev.events = EPOLLIN;
+                    ev.data.fd = client_fd;
+                    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_fd, &ev);
+                }
+            } else {    // Existing client and file descriptor from event is not server.
+
+                char read_buffer[1024];   // should be MAX_MESSAGE_SIZE
+                int n = read(fd, read_buffer, sizeof(read_buffer));
+
+                if (n <= 0) {
+
+                    close(fd);
+                    epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
+                } else {
+
+                    for (int ch=0; ch<n; ch++){
+                        u2u_write_character(1, read_buffer[ch]);
+                    }
+
+                }
+            }
+
+        } // Loop for n_ready.
+        if (keep_socket_running != 1){
+            break;
+        }
+    }
+
+    sprintf(log_buffer_thread_2, "%s:: Exiting function.", __func__);
+    thread2_logger(log_buffer_thread_2, 4);
+    close(epoll_fd);
+    close(server_fd);
+    return NULL;
+}
+ 
+/* Reading from serial port and calling uart0_character_processor() for each character. */
+//void* read_task(void* _){ // Changed name to serial_in_task
+void* serial_in_task(void* _){
+    (void) _;
+    int len_new = 0;
+    char read_buffer[1024];
+    int ch;
+    if (is_serial_running){
+        sprintf(log_buffer_thread_1, "THREAD: %s:: serial_in_task already started.", __func__);
+        thread1_logger(log_buffer_thread_1, 2);
+        pthread_exit(NULL);
+    }else{
+        is_serial_running = 1;
+        sprintf(log_buffer_thread_1, "THREAD: %s:: Entering main serial task loop.", __func__);
+        thread1_logger(log_buffer_thread_1, 2);
+        while (1){
+            if (options.port_enable[0][0]==1){
+
+                len_new = read(serial_port, &read_buffer, sizeof(read_buffer));
+                read_buffer[len_new] = 0;
+            
+                if (len_new < 0) {
+                    printf("Error reading: %s", strerror(errno));
+                    pthread_exit(NULL);
+                }
+                if (len_new > 0){
+                    for (ch=0; ch<len_new; ch++){
+                        char new_c = read_buffer[ch];
+                        //uart0_character_processor(new_c); (v5)
+                        u2u_write_character(0, new_c);
+                    }
+                    transfer_counter[0][0]++;
+                }
+                if (keep_serial_running!=1){ 
+                    is_serial_running = 0;
+                    sprintf(log_buffer_thread_1, "THREAD: %s:: Request to quit serial task loop.", __func__);
+                    thread1_logger(log_buffer_thread_1, 2);
+                    break;
+                }
+            }else{ // Port disabled
+                if (keep_serial_running!=1){ 
+                    is_serial_running = 0;
+                    break;
+                }
+            }
+        }
+        sprintf(log_buffer_thread_1, "THREAD: %s:: exiting serial task.", __func__);
+        thread1_logger(log_buffer_thread_1, 2);
+        close(serial_port);
+        pthread_exit(NULL);
+    }
+}
+
+uint8_t write_from_uart(char* buffer, size_t buffer_length){
+    int r;
+    r = write_from_uart0(buffer, buffer_length);
+    r = write_from_uart1(buffer, buffer_length);
+    return r;
+}
+
+
+int ip_cmp(const char* ip1, const char* ip2){
+    int i, j, ret_val;
+// && (ip1!=0 && ip2!=0
+    j = 0;
+    for (i=0; i<MAX_IP_LEN; i++){
+        if (ip1[i]==ip2[i]){
+            if(ip1[i]==0 && ip2[i]==0){
+                ret_val = 1;
+                break;
+            }
+            j++;
+        }else{
+            ret_val = 0;
+            break;
+        }
+    }
+    return ret_val;
+}
+    
+int peer_list_setup(){
+    int i, j, ret_val;
+    ret_val = 0;
+    peer_count = 0;
+    for (int i=0; i<3; i++){
+        transfer_counter[0][i] = 0;
+        transfer_counter[1][i] = 0;
+    }
+
+    for (i=0; i<PEER_COUNT; i++){
+        j=0;
+        if (ip_cmp(SELF_IP_ADDRESS, PEER_IP_LIST[i])==0){
+            while (PEER_IP_LIST[i][j]!=0 && j<MAX_IP_LEN){
+                peer_ip_list[peer_count][j] = PEER_IP_LIST[i][j];
+                j++;
+            }
+            peer_ip_list[peer_count][j] = 0;
+            peer_count++;
+        }
+    }
+    sprintf(log_buffer, "HAL: %s:: peer_list_setup list of peers: ", __func__);
+    hal_logger(log_buffer, 4);
+    for (i=0; i<peer_count; i++){
+        sprintf(log_buffer, "     %s", peer_ip_list[i]);
+        hal_logger(log_buffer, 4);
+    }
+    sprintf(log_buffer, "HAL: %s:: peer_list_setup self IP address: %s", __func__, SELF_IP_ADDRESS);
+    hal_logger(log_buffer, 4);
+    return ret_val;
+}
+
+int set_port(int port, bool dir, bool state){
+    if (port<0 || port>1){
+        return 1;
+    }
+    options.port_enable[port][dir] = state;
+    return 0;
+}
+
+/* Flag for comm logging pdr:
+ * bit 0 [1]: PORT, port value.
+ * bit 1 [2]: DIR, {0: inbound, 1: outbound}.
+ * bit 2 [4]: RFLAG, {For DIR = 0: 0: self or gen addressed, 1: other and forwarded}.
+ *               {For DIR = 1: 0: message response,      1: message forward}.
+ * bit 3 [8]: ORG, {0: auto,    1: external}.
+ *
+ * */
+
+
+void inbound_message_logger(char* buffer, int buffer_length){
+    sprintf(log_buffer, "%s.", buffer);  
+    u2u_logger(log_buffer, 4);          
+    sprintf(log_buffer, "HAL: %s:: buffer: %s, len: %d.", __func__, buffer, buffer_length);
+    hal_logger(log_buffer, 2);
+    return;
+}
+
+//int set_port(int port, bool dir, bool state)
+int u2u_uart_setup(){
+    int ret_val = 0; 
+    ret_val = (ret_val * 1) + set_port(0, 0, 1); 
+    ret_val = (ret_val * 2) + set_port(0, 1, 1);
+    ret_val = (ret_val * 4) + set_port(1, 0, 1);
+    ret_val = (ret_val * 8) + set_port(1, 1, 1);
+        
+    if (ret_val==0){
+        sprintf(log_buffer, "HAL: %s::  ports enabled.", __func__);
+        hal_logger(log_buffer, 4);
+    }else{
+        sprintf(log_buffer, "HAL: %s::  ports enabling failed: %d.", __func__, ret_val);
+        hal_logger(log_buffer, 2);
+    }
+
+
+    sprintf(log_buffer, "HAL: %s::  loading peer_list.", __func__);
+    hal_logger(log_buffer, 4);
+    peer_list_setup();
+    serial_port = open("/dev/ttyS0", O_RDWR);
+    if (serial_port < 0) {
+        //printf("Error %i from open: %s\n", errno, strerror(errno));
+        sprintf(log_buffer, "HAL: %s::  Error %i from open: %s\n", __func__, errno, strerror(errno));
+        hal_logger(log_buffer, 2);
+    }
+    struct termios tty;
+    if(tcgetattr(serial_port, &tty) != 0) {
+        //printf("Error %i from tcgetattr: %s\n", errno, strerror(errno));
+        sprintf(log_buffer, "HAL: %s:: Error %i from tcgetattr: %s\n", __func__, errno, strerror(errno));
+        hal_logger(log_buffer, 2);
+        return 1;
+    }
+    tty.c_cflag &= ~PARENB; // Clear parity bit, disabling parity (most common)
+    tty.c_cflag &= ~CSTOPB; // Clear stop field, only one stop bit used in communication (most common)
+    tty.c_cflag &= ~CSIZE;  // Clear all bits that set the data size
+    tty.c_cflag |= CS8;     // 8 bits per byte (most common)
+    tty.c_cflag &= ~CRTSCTS;// Disable RTS/CTS hardware flow control (most common)
+    tty.c_cflag |= CREAD | CLOCAL; // Turn on READ & ignore ctrl lines (CLOCAL = 1)
+    tty.c_lflag &= ~ICANON;
+    tty.c_lflag &= ~ECHO;   // Disable echo
+    tty.c_lflag &= ~ECHOE;  // Disable erasure
+    tty.c_lflag &= ~ECHONL; // Disable new-line echo
+    tty.c_lflag &= ~ISIG;   // Disable interpretation of INTR, QUIT and SUSP
+    tty.c_iflag &= ~(IXON | IXOFF | IXANY); // Turn off s/w flow ctrl
+    tty.c_iflag &= ~(IGNBRK|BRKINT|PARMRK|ISTRIP|INLCR|IGNCR|ICRNL); // Disable any special handling of received bytes
+    tty.c_oflag &= ~OPOST;  // Prevent special interpretation of output bytes (e.g. newline chars)
+    tty.c_oflag &= ~ONLCR;  // Prevent conversion of newline to carriage return/line feed
+    // tty.c_oflag &= ~OXTABS; // Prevent conversion of tabs to spaces (NOT PRESENT ON LINUX)
+    // tty.c_oflag &= ~ONOEOT; // Prevent removal of C-d chars (0x004) in output (NOT PRESENT ON LINUX)
+    tty.c_cc[VTIME] = 32;   // Wait for up to 1s (10 deciseconds), returning as soon as any data is received.
+    tty.c_cc[VMIN] = 0;
+    cfsetispeed(&tty, B115200);
+    cfsetospeed(&tty, B115200);
+    
+    // Save tty settings, also checking for error
+    if (tcsetattr(serial_port, TCSANOW, &tty) != 0) {
+        //printf("Error %i from tcsetattr: %s\n", errno, strerror(errno));
+        sprintf(log_buffer, "HAL: %s:: Error %i from tcsetattr: %s\n", __func__, errno, strerror(errno));
+        hal_logger(log_buffer, 2);
+        return 1;
+    }
+
+    keep_running = 1;
+    wake_fd = eventfd(0, EFD_NONBLOCK);
+
+    sprintf(log_buffer, "HAL: %s:: Starting serial thread.", __func__);
+    hal_logger(log_buffer, 4);
+    keep_serial_running = 1;
+    pthread_create(&thread_id_serial_read, NULL, serial_in_task, &serial_port);
+    sprintf(log_buffer, "HAL: %s:: Serial thread started.", __func__);
+    hal_logger(log_buffer, 4);
+
+    sprintf(log_buffer, "HAL: %s:: Starting socket thread.", __func__);
+    hal_logger(log_buffer, 4);
+    /* Socket setup here: */
+    keep_socket_running = 1;
+    pthread_create(&thread_id_socket_read, NULL, socket_in_task, &socket_port);
+
+    sprintf(log_buffer, "HAL: %s:: Socket thread started.", __func__);
+    hal_logger(log_buffer, 4);
+    //close(serial_port);
+    sprintf(log_buffer, "HAL: %s:: Setup completed.", __func__);
+    hal_logger(log_buffer, 4);
+    return 0;
+}
+
+
+
+int u2u_uart_close(){
+    sprintf(log_buffer, "HAL: %s:: closing u2u_uart.", __func__);
+    hal_logger(log_buffer, 4);
+
+
+    keep_running = 0;
+
+    keep_serial_running = 0;
+    
+    keep_socket_running = 0;
+    uint64_t val = 1;
+    write(wake_fd, &val, sizeof(val));
+
+    sprintf(log_buffer, "HAL: %s:: waiting for serial thread to collapse.", __func__);
+    hal_logger(log_buffer, 4);
+    pthread_join(thread_id_serial_read, NULL);
+    //shutdown(server_fd, SHUT_RDWR);
+    //close(server_fd);
+    sprintf(log_buffer, "HAL: %s:: waiting for socket thread to collapse.", __func__);
+    hal_logger(log_buffer, 4);
+    pthread_join(thread_id_socket_read, NULL);
+    sprintf(log_buffer, "HAL: %s:: threads collapsed.", __func__);
+    hal_logger(log_buffer, 4);
+    return 0;
+}
+
+uint8_t u2u_self_test(uint8_t port){
+    (void) port;
+    return 0;
+}
+//u2u_HAL_lx.c
+
+#include "u2u_HAL_lx.h"
+
+
+const char* comm_log_file_location = "/home/pi/c_taal/u2u/hal/linux/logs"; // Todo:  check path via pwd and ammend
+
 pthread_mutex_t     keep_serial_running_mutex   = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t     keep_socket_running_mutex   = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t     is_serial_running_mutex     = PTHREAD_MUTEX_INITIALIZER;
