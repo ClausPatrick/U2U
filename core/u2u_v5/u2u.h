@@ -1,4 +1,3 @@
-/* Origin: deepspace9, /home/pi/c_taal/u2u/core/u2u_v5_1/src/u2u.h - updated: 2026/05/12 13:46:11. */ 
 //u2u.h
 #ifndef U2U_H
 #define U2U_H
