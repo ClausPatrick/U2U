@@ -9,6 +9,9 @@ uint8_t  MAX_PORTS = 2;
 uint8_t  MAX_PORTS = 3;
 #endif
 
+#include <time.h>
+
+
 
 uint8_t UPC;   
 size_t self_name_len;
@@ -16,10 +19,14 @@ size_t self_name_len;
 
 const uint8_t    CRC7_POLY              = 0x91;
 #define MAX_TABLE_SIZE 1024
+#define MAX_UART_BUFFER_SIZE 1024 * 4 
 int hash_table[MAX_TABLE_SIZE];
 #define TOPIC_AMOUNT 17
-static char log_buffer[1024*2];
 const char* topic_list[]    = { "HAIL____", "HELP____", "SET_LCD_", "SET_OLED", "GET_SNSR", "SET_ENCR", "GET_ENCR", "SET_LED_", "SET_TIME", "GET_TIME", "SET_DATE", "GET_DATE", "RSERVD_0", "RSERVD_1", "RSERVD_2", "RSERVD_3", "RSERVD_4"};
+
+
+
+#define RESPONSE_HOP_ADD_INBOUND 0
 
 char topic_response_buffers[MAX_TOPIC_RESPONSES][MAX_PAYLOAD_SIZE];
 
@@ -317,13 +324,27 @@ struct Message_Queue{
     uint8_t rear;
     uint8_t max;
     bool    full;
+    uint8_t free_index;
 };
+
+struct Circular_Queue{
+    char   buffer[MAX_UART_BUFFER_SIZE];
+    volatile uint16_t write_index;
+    volatile uint16_t read_index;
+};
+
+
+void circular_queue_init(struct Circular_Queue* queue){
+    queue->write_index = 0;
+    queue->read_index = 0;
+}
 
 void message_queue_clear(struct Message_Queue* queue){
     queue->front = 0;
     queue->rear = 0;
     queue->count = 0;
     queue->full = false;
+    queue->free_index = 0;
     for (int i=0; i<queue->max; i++){
         queue->buffer[i] = -1;
     }
@@ -351,10 +372,14 @@ uint8_t get_queue_size(struct Message_Queue* queue){
 }
 
 uint8_t get_next_free(struct Message_Queue* queue){
-    return queue->front;
+    uint8_t message_list_index = queue->free_index;
+    if (++queue->free_index >= MAX_MESSAGE_KEEP){
+        queue->free_index = 0;
+    }
+    return message_list_index;
+    //return queue->front;
 }
 
-}
 
 bool queue_full(struct Message_Queue* queue){
     return queue->full;
@@ -371,7 +396,6 @@ int in_queue(struct Message_Queue* queue, uint8_t index){
             queue->rear = 0;
         }
     }
-
     if (++(queue->front) == queue->max){
         queue->front = 0;
     }
@@ -380,43 +404,91 @@ int in_queue(struct Message_Queue* queue, uint8_t index){
 }
 
 /* Returns 0 if queue is not empty and -1 otherwise */
-// Todo Needs to be made thread safe to prevent MAIN accessing it while message is being parsed.
 int out_queue(struct Message_Queue* queue, uint8_t* index){
-    int ret_val = -1;
-    if (!queue_empty(queue)){
-        *index = queue->buffer[queue->rear];
-        queue->full = false;
-        if (++(queue->rear) == queue->max){
-            queue->rear = 0;
-        }
+    if (queue_empty(queue)){
+        return -1;
+    }
+    *index = queue->buffer[queue->rear];
+    if (++(queue->rear) == queue->max){
+        queue->rear = 0;
+    }
+    queue->full = false;
+    return 0;
+}
 
+int write_to_circular_queue(struct Circular_Queue* queue, char ch) {
+    int ret_val = 0;
+    size_t temp_write_index = queue->write_index + 1;
+    if (temp_write_index >= MAX_UART_BUFFER_SIZE){ // Avoiding MODULO % might be overzealous with powers of 2.
+        temp_write_index = 0;
+    }
+    if (temp_write_index == queue->read_index){  // Full buffer.
+       ret_val = 1;
+    }else{
+        queue->buffer[queue->write_index] = ch;
+        if (++queue->write_index==MAX_UART_BUFFER_SIZE){
+            queue->write_index = 0;
+        }
         ret_val = 0;
     }
     return ret_val;
-
 }
 
-enum message_error_code {
-    CRC_HAN_ERR = 1,    // Error on crc. Received does not matched calculated.
-    LEN_HAN_ERR = 2,    // Error on message length: no match on advertised value.
-    RFL_HAN_ERR = 4,    // Error on R-flag. First char should have been 'R'.
-    RFS_HAN_ERR = 8,    // Error on R-flag. Second char is not {Q, I, S, N}.
-    GRS_ROU_ERR = 16,   // Routing error: GEN call with RS flag. Responses should never be GEN.
-    GSC_ROU_ERR = 32,   // Routing error: SELF call with self name. Either message spoofed or loop in topology.
-    GRN_ROU_ERR = 64    // Routing error: R-flag was negative. Possible peer received corrupted message.
-};
+int read_from_circular_queue(struct Circular_Queue* queue, char* ch) {
+    int ret_val = 0;
+    if (queue->read_index == queue->write_index) { // Empty buffer.
+       ret_val = 1;
+    }else{
+        *ch = queue->buffer[queue->read_index];
+        if (++queue->read_index==MAX_UART_BUFFER_SIZE){
+            queue->read_index = 0;
+        }
+        ret_val = 0;
+    }
+    return ret_val;
+}
 
+struct U2U_Errors{
+    uint32_t error_count[PORT_COUNT];
+    uint32_t drb_uart[PORT_COUNT];
+    uint32_t crc_handler[PORT_COUNT]; 
+    uint32_t seg_handler[PORT_COUNT];
+    uint32_t seg_crc_missing[PORT_COUNT];
+    uint32_t seg_rflag_missing[PORT_COUNT];
+    uint32_t seg_rflag_fault[PORT_COUNT];
+    uint32_t seg_rflag_unknown[PORT_COUNT];
+    uint32_t len_handler[PORT_COUNT];
+    uint32_t rfl_handler[PORT_COUNT];
+    uint32_t rfs_handler[PORT_COUNT];
+    uint32_t grs_router[PORT_COUNT];
+    uint32_t rcf_router[PORT_COUNT];
+    uint32_t srn_router[PORT_COUNT];
+};
 
 struct Message message_list[PORT_COUNT][MAX_MESSAGE_KEEP];
 struct Parser parser[PORT_COUNT];
 struct Message_Queue queue[PORT_COUNT];    // Accomodating for all  ports.
+struct Circular_Queue circular_queue[PORT_COUNT];
+struct U2U_Errors u2u_errors;
+
+enum message_error_code {
+    CRC_HAN_ERR = 1,    // Error on crc. Received does not matched calculated or CRC segment not present.
+    SEG_HAN_ERR = 2,    // Some essential segment is missing.
+    LEN_HAN_ERR = 4,    // Error on message length: no match on advertised value.
+    RFL_HAN_ERR = 8,    // Error on R-flag. First char should have been 'R'.
+    RFS_HAN_ERR = 16,    // Error on R-flag. Second char is not {Q, I, S, N}.
+    GRS_ROU_ERR = 32,   // Routing error: GEN call with RS flag. Responses should never be GEN.
+    GSC_ROU_ERR = 64,   // Routing error: SELF call with self name. Either message spoofed or loop in topology.
+    GRN_ROU_ERR = 128   // Routing error: R-flag was negative. Possible peer received corrupted message.
+};
+
 
 char digit_array[128];
 char capital_array[128];
 char lower_array[128];
 
 uint8_t (*router_function_array[16])(struct Message* message, uint8_t port);
-void (*write_to_ports[3])(char* buffer, size_t length);
+uint8_t (*write_from_uart_func_arr[3])(char* buffer, size_t length);
 
 void topic_init(){
     for (int t=0; t<MAX_TOPIC_RESPONSES; t++){
@@ -436,7 +508,7 @@ void topic_init(){
  * If 'length' == 0 AND no NULL term is present, entire max allocated space will potentially be copied.
  * Returns error(-1) if parameter 'topic_nr' exceeds max.
  */
-int topic_exchange(int topic_nr, const char* buffer, size_t length){
+int u2u_topic_exchange(int topic_nr, const char* buffer, size_t length){
     if (topic_nr >= MAX_TOPIC_RESPONSES){
         return -1;
     }
@@ -465,28 +537,29 @@ void parser_init(){
             MAX_PORTS = 3;
             break;
         default:
+            break;
     }
     self_name_len = len(SELF_NAME);
     router_function_array[0]  = general_call;
     router_function_array[1]  = self_call;
     router_function_array[2]  = other_call;
-    router_function_array[3]  = drop_call;
+    router_function_array[3]  = illegal_ROUTING_call;
     router_function_array[4]  = other_call;
     router_function_array[5]  = drop_call;
     router_function_array[6]  = other_call;
-    router_function_array[7]  = drop_call;
-    router_function_array[8]  = drop_call;
+    router_function_array[7]  = illegal_ROUTING_call;
+    router_function_array[8]  = illegal_GEN_call;
     router_function_array[9]  = drop_call;
     router_function_array[10] = other_call;
-    router_function_array[11] = drop_call;
-    router_function_array[12] = drop_call;
-    router_function_array[13] = drop_call;
+    router_function_array[11] = illegal_ROUTING_call;
+    router_function_array[12] = illegal_GEN_call;
+    router_function_array[13] = drop_RN_call;
     router_function_array[14] = other_call;
-    router_function_array[15] = drop_call;
+    router_function_array[15] = illegal_ROUTING_call;
 
-    write_to_ports[0] = write_to_port0;
-    write_to_ports[1] = write_to_port1;
-    write_to_ports[2] = write_to_port2;
+    write_from_uart_func_arr[0] = write_from_uart0;
+    write_from_uart_func_arr[1] = write_from_uart1;
+    write_from_uart_func_arr[2] = write_from_uart2;
 
     for (int i=0; i<128; i++){
         digit_array[i] = 0;
@@ -525,7 +598,7 @@ void message_clear(struct Message* message){
     message->routing_control  = 0;
     message->segment_count    = 0;
     message->crc_received     = 0;
-    message->topic_index      = 0;
+    message->topic_nr         = 0;
     message->hops_int         = 0;
     message->r_value          = 0;
     message->length           = 0;
@@ -639,6 +712,8 @@ uint8_t character_handler(uint8_t port, char ch){
                      * or parts of it got lost and parser ended up in another message.
                      */
                     parser[port].message->error_code += LEN_HAN_ERR;
+                    u2u_errors.len_handler[port]++;
+                    u2u_errors.error_count[port]++;
                     ret_val = 2;
                 }
             }
@@ -649,7 +724,6 @@ uint8_t character_handler(uint8_t port, char ch){
     }
     return ret_val;
 }
-
 
 
 /* Return index for flag. Todo: 'M' must not be used (or the flag needs removing from flag list).*/
@@ -665,7 +739,7 @@ int8_t get_segment_index(struct Message* message, char flag){
 }
 
 size_t get_segment_length(struct Message* message, char flag){
-    int flag_index = get_segment_index(message, flag);
+    int8_t flag_index = get_segment_index(message, flag);
     return message->segment_length[flag_index];
 }
 
@@ -681,28 +755,49 @@ uint8_t message_parser(struct Message* message, uint8_t port){
     uint8_t seg_received = parser[port].prm_seg_len_ix - 1;
     uint8_t ret_val = 0;
     message->segment_count = seg_received;
+    message->port = port;
     for (int s=0; s<seg_received; s++){
         message->segment_length[s] = parser[port].prm_seg_len_array[s+1];
         message->segments[s] = message->raw + ch_ix;
         ch_ix += parser[port].prm_seg_len_array[s+1];
     }
-    uint8_t crc_index = get_segment_index(message, 'Y');
+    int8_t crc_index = get_segment_index(message, 'Y');
+    if (crc_index < 0){  // No CRC segment present!
+        message->error_code |= SEG_HAN_ERR;
+        u2u_errors.seg_crc_missing[port]++;
+        u2u_errors.error_count[port]++;
+        ret_val = 1;
+    }
     uint8_t crc_val_rx = 
         ascii_to_int_i(message->segments[crc_index], get_segment_length(message, 'Y'));
     uint8_t crc_val_cl = get_crc(message->raw, message->length-4);
     message->crc_received = crc_val_rx;
     message->crc_calculated = crc_val_cl;
-    uint8_t chapter_index = get_segment_index(message, 'C');
-    message->chapter_int = 
-        ascii_to_int_i(message->segments[chapter_index], get_segment_length(message, 'C'));
+    int8_t chapter_index = get_segment_index(message, 'C');
+    uint8_t chapter_int = 0;
+    if (chapter_index >= 0){  // No chapter segement present. Setting it to 0. 
+        chapter_int = 
+            ascii_to_int_i(message->segments[chapter_index], get_segment_length(message, 'C'));
+    }
+    message->chapter_int = (uint8_t) chapter_int;
     /* Testing CRC value */
     if (crc_val_rx != crc_val_cl){
         message->error_code += CRC_HAN_ERR;
+        u2u_errors.crc_handler[port]++;
+        u2u_errors.error_count[port]++;
         ret_val = 1;
     }
     /* Ensuring R-Flag starts with 'R' character */
-    if (message->segments[get_segment_index(message, 'F')][0] != 'R'){
+    int8_t rflag_index = get_segment_index(message, 'F');
+    if (rflag_index < 0){
+        message->error_code |= SEG_HAN_ERR;
+        u2u_errors.seg_rflag_missing[port]++;
+        u2u_errors.error_count[port]++;
+        ret_val = 1;
+    }else if (message->segments[(int8_t) rflag_index][0] != 'R'){
         message->error_code += RFL_HAN_ERR;
+        u2u_errors.seg_rflag_fault[port]++;
+        u2u_errors.error_count[port]++;
         ret_val = 1;
     }
     return ret_val;
@@ -743,31 +838,37 @@ void fill_length_preamble(char* buffer, size_t length){
 
 size_t response_composer(struct Message* message, char* buffer){
     char tmp_buffer[MAX_PR_MESSAGE_SIZE];
-    message->topic_index = topic_to_int_hash(
-            message->segments[get_segment_index(message, 'T')],
-            message->segment_length[get_segment_index(message, 'T')]);
-
-    /* Handling response payload segment. */
     size_t payload_length = 0;
     char payload_buffer[MAX_PAYLOAD_SIZE];
-    if (message->topic_index < 0){
-        message->topic_index = MAX_TOPIC_RESPONSES;
-        payload_length += add_segment(payload_buffer, topic_response_buffers[message->topic_index],
+    int8_t topic_index = get_segment_index(message, 'T');
+    /* Handling response payload segment. */
+    if (topic_index >= 0){
+        message->topic_nr = topic_to_int_hash(
+                message->segments[topic_index],
+                message->segment_length[topic_index]);
+
+        if (message->topic_nr > MAX_TOPIC_RESPONSES){
+            message->topic_nr = MAX_TOPIC_RESPONSES;
+        }
+        payload_length += add_segment(payload_buffer, topic_response_buffers[message->topic_nr], 0, MAX_PAYLOAD_SIZE);
+    } else{
+        char* no_topic_warning = "TOPIC segment not present.";
+        message->topic_nr = -1;
+        payload_length += add_segment(payload_buffer, topic_response_buffers[message->topic_nr],
                 0, MAX_PAYLOAD_SIZE);
-        payload_length += add_segment(payload_buffer, message->segments[get_segment_index(message, 'T')], 
-                payload_length, get_segment_length(message, 'T'));
-        payload_length += add_segment(payload_buffer, "'. ", 
-                payload_length, MAX_PAYLOAD_SIZE);
-    }else{
-        payload_length += add_segment(payload_buffer, topic_response_buffers[message->topic_index], 0, MAX_PAYLOAD_SIZE);
+        payload_length += add_segment(payload_buffer, no_topic_warning, payload_length, len(no_topic_warning));
     }
 
     /* Calculating hop segment. */
-    int hop = ascii_to_int_i(
-            message->segments[get_segment_index(message, 'H')], 
-            get_segment_length(message, 'H'));
-    if (++hop >= 1000){
-        hop = 0;
+    int hop = 0;
+    if (RESPONSE_HOP_ADD_INBOUND == 1){
+        hop = ascii_to_int_i(
+                message->segments[get_segment_index(message, 'H')], 
+                get_segment_length(message, 'H'));
+        if (++hop >= 1000){
+            hop %= 1000;
+        }
+
     }
     char hop_buffer[MAX_HOPS_SIZE];
     size_t hop_length = int_to_ascii(hop_buffer, hop, 0);
@@ -795,12 +896,15 @@ size_t response_composer(struct Message* message, char* buffer){
                 pr_len = int_to_ascii(tmp_buffer, payload_length, 0);
                 buffer_index += add_segment(buffer, tmp_buffer, buffer_index, pr_len);
                 break;
-            case 'H':{
-                char hop_pream_size_buf[3];
-                pr_len = int_to_ascii(hop_pream_size_buf, hop_length, 0);
-                buffer_index += add_segment(buffer, hop_pream_size_buf, buffer_index, pr_len);
-                break;
+            case 'H':
+                if (RESPONSE_HOP_ADD_INBOUND == 1){
+                    char hop_pream_size_buf[3];
+                    pr_len = int_to_ascii(hop_pream_size_buf, hop_length, 0);
+                    buffer_index += add_segment(buffer, hop_pream_size_buf, buffer_index, pr_len);
+                }else{
+                    buffer[buffer_index++] = '1';
                 }
+                break;
             default:
                 pr_len = int_to_ascii(tmp_buffer, get_segment_length(message, flag), 0);
                 buffer_index += add_segment(buffer, tmp_buffer, buffer_index, pr_len);
@@ -858,11 +962,17 @@ size_t response_composer(struct Message* message, char* buffer){
                         payload_length);
                 break;
             case 'H':
-                buffer_index += add_segment(
-                        buffer, 
-                        hop_buffer, 
-                        buffer_index, 
-                        hop_length);
+                if (RESPONSE_HOP_ADD_INBOUND == 1){
+                    buffer_index += add_segment(
+                            buffer, 
+                            hop_buffer, 
+                            buffer_index, 
+                            hop_length);
+                }else{
+                    buffer[buffer_index++] = '0';
+                }
+                break;
+            case 'Y':
                 break;
             default:
                 buffer_index += add_segment(
@@ -870,9 +980,6 @@ size_t response_composer(struct Message* message, char* buffer){
                         message->segments[get_segment_index(message, flag)], 
                         buffer_index, 
                         get_segment_length(message, flag));
-                        sprintf(log_buffer, "%s: custom flag: '%c', buffer: '%s'.", 
-                                __func__, flag, buffer);
-                        logger(log_buffer, 4);   
                 break;
         }
     }
@@ -894,7 +1001,7 @@ size_t forward_composer(struct Message* message, char* buffer){
             message->segments[get_segment_index(message, 'H')], 
             get_segment_length(message, 'H'));
     if (++hop >= 1000){
-        hop = 0;
+        hop %= 1000;
     }
 
     /* Filling in preamble part. */
@@ -924,6 +1031,7 @@ size_t forward_composer(struct Message* message, char* buffer){
         char flag = message->preamble_flags[s];
         if (flag == 'H'){
             buffer_index += add_segment( buffer, hop_buffer, buffer_index, hop_length);
+        }else if (flag == 'Y') {
         }else{
             buffer_index += add_segment(
                     buffer, 
@@ -959,12 +1067,12 @@ void write_forward_message(char* buffer, size_t length, uint8_t port){
     uint8_t ports[2];
     uint8_t forward_port_count = get_max_ports(ports, port);
     for (uint8_t p=0; p<forward_port_count; p++){
-        (*write_to_ports[ports[p]])(buffer, length);
+        (*write_from_uart_func_arr[ports[p]])(buffer, length);
     }
 }
 
 void write_response_message(char* buffer, size_t length, uint8_t port){
-    (*write_to_ports[port])(buffer, length);
+    (*write_from_uart_func_arr[port])(buffer, length);
 }
 
 uint8_t general_call(struct Message* message, uint8_t port){
@@ -990,6 +1098,14 @@ uint8_t other_call(struct Message* message, uint8_t port){
     return 0;
 }
 
+uint8_t drop_RN_call(struct Message* message, uint8_t port){
+    // do nothing
+    u2u_errors.error_count[port]++;
+    u2u_errors.srn_router[port]++;
+    (void) message;
+    return 0;
+}
+
 uint8_t drop_call(struct Message* message, uint8_t port){
     // do nothing
     (void) message;
@@ -1004,6 +1120,21 @@ uint8_t illegal_call(struct Message* message, uint8_t port){
     return 0;
 }
 
+uint8_t illegal_GEN_call(struct Message* message, uint8_t port){
+    // error code
+    u2u_errors.error_count[port]++;
+    u2u_errors.grs_router[port]++;
+    (void) message;
+    return 0;
+}
+
+uint8_t illegal_ROUTING_call(struct Message* message, uint8_t port){
+    // error code
+    u2u_errors.error_count[port]++;
+    u2u_errors.rcf_router[port]++;
+    (void) message;
+    return 0;
+}
 
 /* R-value |  S-value
  * --------|---------
@@ -1015,7 +1146,6 @@ uint8_t illegal_call(struct Message* message, uint8_t port){
  * */
 
 uint8_t message_router(struct Message* message, uint8_t port){
-    print_segments(message, port);
     char flag = message->segments[get_segment_index(message, 'F')][1];
     switch (flag){
         case 'Q':
@@ -1033,10 +1163,13 @@ uint8_t message_router(struct Message* message, uint8_t port){
         default:
             message->r_value = 4;
             message->error_code += RFS_HAN_ERR;
+            u2u_errors.seg_rflag_unknown[port]++;
+            u2u_errors.error_count[port]++;
             break;
     }
 
-    if (cmp_i(message->segments[get_segment_index(message, 'R')], GENERAL_NAME, get_segment_length(message, 'R'), 3)){
+    if (cmp_i(message->segments[get_segment_index(message, 'R')], 
+                GENERAL_NAME, get_segment_length(message, 'R'), 3)){
         message->s_value = 0;
     }else if 
         (cmp_i(message->segments[get_segment_index(message, 'R')], SELF_NAME, 
@@ -1065,7 +1198,15 @@ uint8_t character_processor(uint8_t port, char ch){
             break;
         case 1: {
             parser_val += message_parser(parser[port].message, port);
+            if (parser_val != 0){
+                parser_clear(port);
+                return 1;
+            }
             parser_val += message_router(parser[port].message, port);
+            if (parser_val != 0){
+                parser_clear(port);
+                return 2;
+            }
             parser_clear(port);
             in_queue(&queue[port], parser[port].message->index);
             break;
@@ -1079,14 +1220,26 @@ uint8_t character_processor(uint8_t port, char ch){
     return ret_val;
 }
 
+uint8_t uart0_character_processor(char ch){
+    uint8_t port = 0;
+    return character_processor(port, ch);
+}
 
-/* Not used anymore. */
-uint8_t u2u_self_test_from_pipe(uint8_t port, const char* message, size_t mes_len){
-    for (size_t c=0; c<mes_len; c++){
-        character_processor(port, (char) message[c]); 
+uint8_t uart1_character_processor(char ch){
+    uint8_t port = 1;
+    return character_processor(port, ch);
+}
+
+uint8_t u2u_write_character(uint8_t port, char ch){
+    int write_result = write_to_circular_queue(&circular_queue[port], ch);
+    if (write_result != 0){
+        u2u_errors.drb_uart[port]++;
+        u2u_errors.error_count[port]++;
+        return 1;
     }
     return 0;
 }
+
 
 void messages_init(){
     for (int p=0; p<PORT_COUNT; p++){
@@ -1098,6 +1251,23 @@ void messages_init(){
     }
 }
 
+void clear_u2u_errors(uint8_t port){
+    u2u_errors.error_count[port]        = 0;
+    u2u_errors.drb_uart[port]           = 0;
+    u2u_errors.crc_handler[port]        = 0; 
+    u2u_errors.seg_handler[port]        = 0;
+    u2u_errors.seg_crc_missing[port]    = 0;
+    u2u_errors.seg_rflag_missing[port]  = 0;
+    u2u_errors.seg_rflag_fault[port]    = 0;
+    u2u_errors.seg_rflag_unknown[port]  = 0;
+    u2u_errors.len_handler[port]        = 0;
+    u2u_errors.rfl_handler[port]        = 0;
+    u2u_errors.rfs_handler[port]        = 0;
+    u2u_errors.grs_router[port]         = 0;
+    u2u_errors.rcf_router[port]         = 0;
+    u2u_errors.srn_router[port]         = 0;
+}
+
 void u2u_message_setup(){
     //messages_init();
     topic_init();
@@ -1105,37 +1275,15 @@ void u2u_message_setup(){
     hash_table_init();
     for (uint8_t p=0; p<PORT_COUNT; p++){
         message_queue_init(&queue[p], p);
+        clear_u2u_errors(p);
+
     }
     u2u_uart_setup();
+
+    
+
 }
 
-void print_message(struct Message* message){
-    printf("Message %d: size: %ld at port %d.\n", message->index, message->length, message->port);
-    char buffer[MAX_MESSAGE_SIZE];
-    size_t c = 0;
-    char flag = '/';
-    for (int seg=0; seg<message->segment_count; seg++){
-        flag = message->preamble_flags[seg];
-        size_t seg_size = message->segment_length[seg];
-        if (seg_size > 0 && message->segments[seg] != 0){
-            for (c=0; c<seg_size; c++){
-                char ch = message->segments[seg][c];
-                if (ch == 0){
-                    buffer[c] = '/';
-                }else if(ch == 10){
-                    buffer[c] = '/';
-                }else{
-                    buffer[c] = ch;
-                }
-            }
-            buffer[c] = 0;
-            printf("\t-%c-(%d)[%ld] '%s'\n", flag, seg, seg_size, buffer);
-        } else{
-            printf("\t-/-(%d)[0] empty\n", seg);
-        }
-
-    }
-}
 
 
 void print_usage_message(int argc, char** argv){
@@ -1144,21 +1292,41 @@ void print_usage_message(int argc, char** argv){
 }
     
 void copy_segment(char* segment, struct Message* message, char segment_flag){
-    size_t length = get_segment_length(message, segment_flag);
-    size_t index  = get_segment_index(message, segment_flag);
-
-    size_t c = 0;
-    for (c=0; c<length; c++){
-        segment[c] = message->segments[index][c];
+    int8_t index  = get_segment_index(message, segment_flag);
+    if (index >= 0){
+        size_t length = get_segment_length(message, segment_flag);
+        size_t c = 0;
+        for (c=0; c<length; c++){
+            segment[c] = message->segments[index][c];
+        }
+        segment[length] = '\0';
+    }else{
+        segment[0] = '-';
+        segment[1] = '\0';
     }
-    segment[length] = '\0';
 }
 
-/* To avoid race conditions MAIN cannot specify the port from which to receive messages and will have to
+#if 0
+/* Function to start parsing chain. It requires MAIN to dedicated a while loop to maintain U2U bus connectivity.
+ * To avoid race conditions MAIN cannot specify the port from which to receive messages and will have to
  * keep polling and this function will alternate (round robin style) between the available ports. 
  * MAIN can implement a 'for loop' to run through the ports that are available.
  */
+#define BLOCK_SIZE 128
 struct Message* get_message(struct Message_Segments* segments){
+    int cq_ret = 0;
+    for (uint8_t p=0; p<PORT_COUNT; p++){
+        char ch;
+        for (uint16_t i=0; i<BLOCK_SIZE; i++){
+            cq_ret = read_from_circular_queue(&circular_queue[p], &ch);
+            if (cq_ret == 0){
+                character_processor(p, ch);
+            }else{
+                break;
+            }
+        }
+    }
+
     static uint8_t port_rr = 0;
     uint8_t message_index = 255;                                                
     int r = out_queue(&queue[port_rr], &message_index);                            
@@ -1166,19 +1334,163 @@ struct Message* get_message(struct Message_Segments* segments){
     struct Message* message = NULL;
     if (r >= 0){
         message = &message_list[port_rr][message_index];           
-        copy_segment(segments->sender,   message, 'S');
-        copy_segment(segments->receiver, message, 'R');
-        copy_segment(segments->rflag,    message, 'F');
-        copy_segment(segments->topic,    message, 'T');
-        copy_segment(segments->chapter,  message, 'C');
-        copy_segment(segments->payload,  message, 'P');
-        copy_segment(segments->hops,     message, 'H');
-        copy_segment(segments->crc,      message, 'Y');
+        if (segments != NULL){ 
+            /* Existence of segment/flag is checked in copy_segment(). */
+            copy_segment(segments->sender,   message, 'S');
+            copy_segment(segments->receiver, message, 'R');
+            copy_segment(segments->rflag,    message, 'F');
+            copy_segment(segments->topic,    message, 'T');
+            copy_segment(segments->chapter,  message, 'C');
     }
-    port_rr = (port_rr + 1) % PORT_COUNT;
+}
+#endif
+
+/* Function to start parsing chain. It requires MAIN to dedicated a while loop to maintain U2U bus connectivity.
+ * To avoid race conditions MAIN cannot specify the port from which to receive messages and will have to
+ * keep polling and this function will alternate (round robin style) between the available ports. 
+ * MAIN can implement a 'for loop' to run through the ports that are available.
+ */
+#define BLOCK_SIZE 128
+struct Message* get_message(struct Message_Segments* segments){
+    int cq_ret = 0;
+    for (uint8_t p=0; p<PORT_COUNT; p++){
+        char ch;
+        for (uint16_t i=0; i<BLOCK_SIZE; i++){
+            cq_ret = read_from_circular_queue(&circular_queue[p], &ch);
+            if (cq_ret == 0){
+                character_processor(p, ch);
+            }else{
+                break;
+            }
+        }
+    }
+
+    static uint8_t port_rr = 0;
+    uint8_t message_index = 255;                                                
+    int r = out_queue(&queue[port_rr], &message_index);                            
+    //uint8_t message_index = from_queue_to_file(port_rr);
+    struct Message* message = NULL;
+    if (r >= 0){
+        message = &message_list[port_rr][message_index];           
+        if (segments != NULL){
+            /* Existence of segment/flag is checked in copy_segment(). */
+            copy_segment(segments->sender,   message, 'S');
+            copy_segment(segments->receiver, message, 'R');
+            copy_segment(segments->rflag,    message, 'F');
+            copy_segment(segments->topic,    message, 'T');
+            copy_segment(segments->chapter,  message, 'C');
+            copy_segment(segments->payload,  message, 'P');
+            copy_segment(segments->hops,     message, 'H');
+            copy_segment(segments->crc,      message, 'Y');
+        }
+
+        int8_t topic_index = get_segment_index(message, 'T');
+        /* Handling response payload segment. */
+        if (topic_index >= 0){
+            message->topic_nr = topic_to_int_hash(
+                    message->segments[topic_index],
+                    message->segment_length[topic_index]);
+
+        }
+    }
+    //port_rr = (port_rr + 1) % PORT_COUNT;
+    if (++port_rr >= PORT_COUNT){
+        port_rr = 0;
+    }
     return message;
 }
 
+
+size_t copy_error_log(char* buffer, const char* label, uint32_t error_count, size_t offset, size_t length){
+    size_t c;
+    if (length == 0){
+        length = 32;
+    }
+    for (c=0; c<length; c++){
+        if (label[c] == 0){break; }
+        buffer[c+offset] = label[c];
+    }
+    offset += c;
+    char err_count_buffer[16];
+    size_t err_count_len = int_to_ascii(err_count_buffer, error_count, 0);
+
+    for (c=0; c<err_count_len; c++){
+        buffer[c+offset] = err_count_buffer[c];
+    }
+    offset += c;
+    buffer[offset++] = '.';
+    buffer[offset++] = ' ';
+    return offset;
+}
+
+
+size_t get_u2u_error_log(uint8_t port, char* buffer){
+    size_t index = 0;
+    if (u2u_errors.error_count[port] > 0){
+        index = copy_error_log(buffer, "Port ", (uint32_t) port, index, 0);
+        index = copy_error_log(buffer, "Error count: ", 
+                u2u_errors.error_count[port], index, 0);
+        if (u2u_errors.drb_uart[port] > 0){
+            index = copy_error_log(buffer, "Dropped bytes: ", 
+                    u2u_errors.drb_uart[port], index, 0);
+        }
+        if (u2u_errors.crc_handler[port] > 0){
+            index = copy_error_log(buffer, "CRC handler: ", 
+                    u2u_errors.crc_handler[port], index, 0);
+        }
+        if (u2u_errors.seg_handler[port] > 0){
+            index = copy_error_log(buffer, "Segments missing: ", 
+                    u2u_errors.seg_handler[port], index, 0);
+        }
+        if (u2u_errors.seg_crc_missing[port] > 0){
+            index = copy_error_log(buffer, "CRC segment missing: ", 
+                    u2u_errors.seg_crc_missing[port], index, 0);
+        }
+        if (u2u_errors.seg_rflag_missing[port] > 0){
+            index = copy_error_log(buffer, "Rflag segment missing: ", 
+                    u2u_errors.seg_rflag_missing[port], index, 0);
+        }
+        if (u2u_errors.seg_rflag_fault[port] > 0){
+            index = copy_error_log(buffer, "Rflag segment fault: ", 
+                    u2u_errors.seg_rflag_fault[port], index, 0);
+        }
+        if (u2u_errors.seg_rflag_unknown[port] > 0){
+            index = copy_error_log(buffer, "Rflag segment unknown: ", 
+                    u2u_errors.seg_rflag_unknown[port], index, 0);
+        }
+        if (u2u_errors.len_handler[port] > 0){
+            index = copy_error_log(buffer, "Message length not as advertised, misformatted: ", 
+                    u2u_errors.len_handler[port], index, 0);
+        }
+        if (u2u_errors.rfl_handler[port] > 0){
+         //   index = copy_error_log(buffer, "Not applicable, error not implemented yet.", 
+         //           u2u_errors.rfl_handler[port], index, 0);
+        }
+        if (u2u_errors.rfs_handler[port] > 0){
+         //   index = copy_error_log(buffer, "Not applicable, error not implemented yet.", 
+         //           u2u_errors.rfs_handler[port], index, 0);
+        }
+        if (u2u_errors.grs_router[port] > 0){
+            index = copy_error_log(buffer, "Routing failure: GEN call received with 'RS' or 'RN'.", 
+                    u2u_errors.grs_router[port], index, 0);
+        }
+        if (u2u_errors.rcf_router[port] > 0){
+            index = copy_error_log(buffer, "Routing failure: error on routing control.", 
+                    u2u_errors.rcf_router[port], index, 0);
+        }
+        if (u2u_errors.srn_router[port] > 0){
+            index = copy_error_log(buffer, "Message error: Self addressed but rflag is RN.", 
+                    u2u_errors.srn_router[port], index, 0);
+        }
+        buffer[index++] = '\0';
+    }
+    return index;
+}
+
+
+uint32_t get_u2u_errors(uint8_t port){
+    return u2u_errors.error_count[port];
+}
 
 /* Example on setting a message with minimum segments as follows below. The order in which the
  * segments are placed depends on the struct member 'segment_flags'. 
@@ -1199,6 +1511,7 @@ int format_message(struct Message* message){
     // Todo: bool custom_chapter = false; // using a static variable to increment each formated message.
     size_t preamble_length = 0;
 
+    //char temp_flags[MAX_SEGMENT_COUNT];
     for (size_t c=0; c<MAX_SEGMENT_COUNT; c++){
         char flag = message->segment_flags[c];
         if (flag == '\0'){
@@ -1264,8 +1577,6 @@ int format_message(struct Message* message){
                 message->length += add_segment(message->raw, len_buffer, message->length, temp_size);
                 break;
             default:
-                sprintf(log_buffer, "%s: custom segment not yet supported: '%c'.", __func__, flag);
-                logger(log_buffer, 4);
                 break;
         }
 
@@ -1286,33 +1597,65 @@ int format_message(struct Message* message){
         char flag = message->segment_flags[c];
         switch (flag){
             case 'S':
-                message->length += add_segment(message->raw, message->sender, message->length, len(message->sender));
+                message->length += add_segment(
+                        message->raw, 
+                        message->sender, 
+                        message->length, 
+                        len(message->sender));
                 break;
             case 'R':
-                message->length += add_segment(message->raw, message->receiver, message->length, len(message->receiver));
+                message->length += add_segment(
+                        message->raw, 
+                        message->receiver, 
+                        message->length, 
+                        len(message->receiver));
                 break;
             case 'F':
-                message->length += add_segment(message->raw, message->rflag, message->length, len(message->rflag));
+                message->length += add_segment(
+                        message->raw, 
+                        message->rflag, 
+                        message->length, 
+                        len(message->rflag));
                 break;
             case 'T':
-                message->length += add_segment(message->raw, message->topic, message->length, len(message->topic));
+                message->length += add_segment(
+                        message->raw, 
+                        message->topic, 
+                        message->length, 
+                        len(message->topic));
                 break;
             case 'C':
                 if (message->chapter == NULL){
-                    message->length += add_segment(message->raw, chapter, message->length, len(chapter));
+                    message->length += add_segment(
+                            message->raw, 
+                            chapter, 
+                            message->length, 
+                            len(chapter));
                 }else{
-                    message->length += add_segment(message->raw, message->chapter, message->length, len(message->chapter));
+                    message->length += add_segment(
+                            message->raw, 
+                            message->chapter, 
+                            message->length, 
+                            len(message->chapter));
                 }
                 break;
             case 'P':
-                message->length += add_segment(message->raw, message->payload, message->length, len(message->payload));
+                message->length += add_segment(
+                        message->raw, 
+                        message->payload, 
+                        message->length, 
+                        len(message->payload));
                 break;
             case 'H':
-                message->length += add_segment(message->raw, message->hops, message->length, len(message->hops));
+                message->length += add_segment(
+                        message->raw, 
+                        message->hops, 
+                        message->length, 
+                        len(message->hops));
+                break;
+            case 'Y':
                 break;
             default:
-                sprintf(log_buffer, "%s: custom segment not yet supported: '%c'.", __func__, flag);
-                logger(log_buffer, 4);
                 break;
         }
     }
@@ -1324,43 +1667,20 @@ int format_message(struct Message* message){
     message->length += add_crc_segment(message->raw, message->length);
     message->raw[message->length++] = ':';
     message->raw[message->length] = '\0';
-    sprintf(log_buffer, "buffer: '%s', len: %ld", len_buffer, message->length);
-    logger(log_buffer, 4);
     return 0;
 }
 
 
 int u2u_send_message_uart0(char* buffer, size_t length){
-    char raw_test[1024];
-    for (size_t c=0; c<length; c++){
-        raw_test[c] = buffer[c];
-    }
-    raw_test[length] = '\0';    // Redundant. Formated messages will add a null term.
-    sprintf(log_buffer, "%s: '%s'.", __func__, raw_test);
-    logger(log_buffer, 4);
-    write_to_port0(buffer, length);
+    write_from_uart0(buffer, length);
     return 0;
 }
 int u2u_send_message_uart1(char* buffer, size_t length){
-    char raw_test[1024];
-    for (size_t c=0; c<length; c++){
-        raw_test[c] = buffer[c];
-    }
-    raw_test[length] = '\0';    // Redundant. Formated messages will add a null term.
-    sprintf(log_buffer, "%s: '%s'.", __func__, raw_test);
-    logger(log_buffer, 4);
-    write_to_port1(buffer, length);
+    write_from_uart1(buffer, length);
     return 0;
 }
 int u2u_send_message_uart2(char* buffer, size_t length){
-    char raw_test[1024];
-    for (size_t c=0; c<length; c++){
-        raw_test[c] = buffer[c];
-    }
-    raw_test[length] = '\0';    // Redundant. Formated messages will add a null term.
-    sprintf(log_buffer, "%s: '%s'.", __func__, raw_test);
-    logger(log_buffer, 4);
-    write_to_port2(buffer, length);
+    write_from_uart2(buffer, length);
     return 0;
 }
 
@@ -1399,41 +1719,8 @@ void u2u_close(){
 
 
 
-/* Testing entry points */
-uint8_t u2u_parse_test(uint8_t port){ 
-    uint8_t return_val = u2u_self_test(port);
-    return return_val; 
-} 
 
 
-/* Writes message to file (via message_logger) for testing purposes             
- * Target file:                                                                 
- * /home/pi/c_taal/u2u/core/u2u_v5/testing/output/queue/message.txt"            
- * */                                                                           
-uint8_t from_queue_to_file(uint8_t port){                                       
-    char buffer[1024*2];                                                        
-    uint8_t message_index;                                                
-    int r = out_queue(&queue[port], &message_index);                            
-    if (r == 0){                                                                
-        size_t ss = 0;                                                          
-        struct Message* message = &message_list[port][message_index];           
-        ss += sprintf(buffer+ss, "Message index: %d, len: %ld, port: %d, crc: (%d/%d), route: %d, code: %d\n",          
-                message->index, message->length, port, message->crc_received,           
-                message->crc_calculated,                                        
-                message->routing_control, message->error_code);                 
-        ss += sprintf(buffer+ss, "    raw: '%s'\n", message->raw);              
-        for (int s=0; s<message->segment_count; s++){                       
-            ss += sprintf(buffer+ss, "    %c(%ld): '", message->preamble_flags[s], message->segment_length[s]);                                                                                  
-            for (size_t c=0; c<message->segment_length[s]; c++){                
-                ss += sprintf(buffer+ss, "%c", message->segments[s][c]);        
-            }                                                                   
-            ss += sprintf(buffer+ss, "', \n");                                  
-        }                                                                       
-        message_logger(buffer);                                                 
-    }else{                                                                      
-    }                                                                           
-    return message_index;                                                       
-}                                                                               
     
 
 /* Message are composed from segments sent through the FIFO pipe. 
@@ -1474,9 +1761,6 @@ int pipe_message_composer(uint8_t port, char* segments){
     }
     temp_buffer[char_counter_per_segment] = '\0';
     size_t pipe_segments_length = ascii_to_int_i(temp_buffer, char_counter_per_segment);
-    sprintf(log_buffer, "%s: lenbuf: '%s'/%ld, offset: %ld.", 
-            __func__, temp_buffer, pipe_segments_length, offset);
-    logger(log_buffer, 4);
 
     
 
@@ -1497,9 +1781,6 @@ int pipe_message_composer(uint8_t port, char* segments){
         }
     }
     for (size_t i=0; i<segment_counter-1; i++){
-        sprintf(log_buffer, "  %c: (%ld) [%c]", 
-                segment_pointers[0][i], segment_lengths[i+1], segment_pointers[i+1][0]);
-        logger(log_buffer, 4);
     }
 
     // Build raw message.
@@ -1561,8 +1842,6 @@ int pipe_message_composer(uint8_t port, char* segments){
     buffer_index += add_crc_segment(buffer, buffer_index);
     buffer[buffer_index++] = ':';
     buffer[buffer_index] = '\0';
-    sprintf(log_buffer, "buffer: '%s', len: %ld", buffer, buffer_index);
-    logger(log_buffer, 4);
 
     switch (port){
         case 0:
