@@ -13,4 +13,5 @@ The behaviour is based now on the character array set in `u2u_client_profile.c` 
 ## Function structure changes
 Before I could get away with parsing/routing being done in the interrupt routines (on the microcontrollers) but this is no longer feasible and predictably will cause issues with 
 heavy network traffic. Now, the received bytes land in a queue and the function `get_message()` is doing the heavy lifting in triggering parsing/routing sequences in defined chunks. 
-The downside is that now a node's function in the network in regards to responses and forwarding depends on `get_message()`  being called in loop/thread.
+The downside is that now a node's function in the network in regards to responses and forwarding depends on `get_message()`  being called in loop/thread and without this the node
+will sever the link between the peers.
